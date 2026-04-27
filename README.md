@@ -14,15 +14,6 @@ A high-performance, completely offline, multi-sensor fusion system designed to a
 
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
 
-### 🎥 System Demo
-<p align="center">
-  <a href="assets/demo.mp4">
-    <img src="assets/osd_main.jpg" alt="Click to watch System Demo Video" width="100%">
-  </a>
-  <br>
-  <em>Click the image above to watch the System Demo video (assets/demo.mp4)</em>
-</p>
-
 ### 📺 OSD Detail View
 <p align="center">
   <img src="assets/osd_main.jpg" alt="OSD Detail View" width="100%">

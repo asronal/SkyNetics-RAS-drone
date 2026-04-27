@@ -61,6 +61,8 @@ class FlightController:
 
         self._reconnect_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._home_lat = None
+        self._home_lon = None
 
         # Telemetry store — all fields are updated by the watchdog loop
         self._telemetry = {
@@ -75,6 +77,12 @@ class FlightController:
             "pitch":     0.0,
             "roll":      0.0,
             "heading":   0.0,
+            "rssi":      0,
+            "throttle":  0,
+            "batt_rem":  0,
+            "current_a": 0.0,
+            "batt_mah":  0,
+            "dist_home": 0.0,
         }
 
     # ── Public API ────────────────────────────────────────────────
@@ -205,14 +213,37 @@ class FlightController:
         with self._lock:
             if msg_type == "SYS_STATUS":
                 self._telemetry["battery_v"] = msg.voltage_battery / 1000.0
+                if msg.current_battery >= 0:
+                    self._telemetry["current_a"] = msg.current_battery / 100.0
+                if msg.battery_remaining >= 0:
+                    self._telemetry["batt_rem"] = msg.battery_remaining
 
             elif msg_type == "VFR_HUD":
                 self._telemetry["speed_kmh"] = msg.groundspeed * 3.6
                 self._telemetry["alt_m"]     = msg.alt
+                self._telemetry["throttle"]  = getattr(msg, "throttle", 0)
 
             elif msg_type == "GLOBAL_POSITION_INT":
-                self._telemetry["lat"] = msg.lat / 1e7
-                self._telemetry["lon"] = msg.lon / 1e7
+                lat = msg.lat / 1e7
+                lon = msg.lon / 1e7
+                self._telemetry["lat"] = lat
+                self._telemetry["lon"] = lon
+
+                # Distance to home
+                if self._home_lat is not None and self._home_lon is not None:
+                    import math
+                    R = 6371000
+                    phi1 = math.radians(self._home_lat)
+                    phi2 = math.radians(lat)
+                    delta_phi = math.radians(lat - self._home_lat)
+                    delta_lambda = math.radians(lon - self._home_lon)
+                    a = math.sin(delta_phi/2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda/2.0)**2
+                    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                    self._telemetry["dist_home"] = R * c
+
+            elif msg_type == "HOME_POSITION":
+                self._home_lat = msg.latitude / 1e7
+                self._home_lon = msg.longitude / 1e7
 
             elif msg_type == "GPS_RAW_INT":
                 self._telemetry["sats"] = msg.satellites_visible
@@ -229,3 +260,12 @@ class FlightController:
                 self._telemetry["roll"]    = math.degrees(msg.roll)
                 hdg = math.degrees(msg.yaw)
                 self._telemetry["heading"] = hdg if hdg >= 0 else 360 + hdg
+
+            elif msg_type == "RC_CHANNELS_RAW":
+                if msg.rssi != 255 and msg.rssi > 0:
+                    # Scale 0-254 to roughly 0-100%
+                    self._telemetry["rssi"] = int((msg.rssi / 254.0) * 100)
+
+            elif msg_type == "BATTERY_STATUS":
+                if msg.current_consumed >= 0:
+                    self._telemetry["batt_mah"] = msg.current_consumed

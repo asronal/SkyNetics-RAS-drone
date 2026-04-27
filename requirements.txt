@@ -12,6 +12,7 @@ onnxruntime>=1.16.0
 # scipy is optional (used for linear_sum_assignment in tracker);
 # the tracker falls back to greedy matching if not available.
 scipy>=1.10.0
+filterpy>=0.11.0
 
 # ── Serial (LD2410C-P radar + F722 FC) ───────────────────────────
 pyserial>=3.5

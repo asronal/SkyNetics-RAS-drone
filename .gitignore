@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.env/
+.venv/
+
+# Logs and databases
+*.log
+rescue.log
+
+# Project Specific
+output/*
+!output/.gitkeep
+
+# IDEs
+.vscode/
+.idea/
+*.swp

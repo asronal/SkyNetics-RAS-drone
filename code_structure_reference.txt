@@ -18,7 +18,7 @@ This document outlines the architecture and purpose of every file within the pro
 3. display/ Directory (The Visual Output)
 -----------------------------------------
 * rescue_display.py: Controls what actually goes to your screen (or your analog VTX!). It builds the OpenCV Fullscreen canvas, composites the Picture-in-Picture thermal overlays, handles togglable main views (RGB vs Thermal), and intercepts your keyboard shortcuts (like generating a snapshot when you press S).
-* osd.py: Dedicated entirely to rendering the On-Screen Display. It draws the literal text telemetry lines, the bounding boxes clamping onto targets, the crosshairs, and dynamically generates the radar scope visualization based on LD2450 target plotting.
+* osd.py: Dedicated entirely to rendering the On-Screen Display. It draws real-time MAVLink telemetry (including RSSI, Distance to Home, Throttle, and Power details), the bounding boxes clamping onto targets, the crosshairs, and dynamically generates the radar scope visualization based on LD2450 target plotting.
 
 4. ml/ Directory (Machine Learning & Logic)
 -------------------------------------------
@@ -31,7 +31,7 @@ This document outlines the architecture and purpose of every file within the pro
 * rgb_camera.py: Communicates exclusively with the Pi Camera Module 3 over the libcamera backend, grabbing the primary visible-light video frames.
 * thermal_camera.py: Specifically handles the I2C protocol bridging your MLX90640. It translates 768 individual thermal pixel pulses into color-mapped numpy arrays.
 * ld2450_radar.py: Standard UART serial decoder strictly meant to talk back and forth with the HLK-LD2450 mmWave presence module and read ranges/movement metrics.
-* flight_controller.py: A MAVLink telemetry decoder bridging your RPi to the F722. It passively monitors OSD stats like drone altitude, voltage, and pitch to be forwarded down to the display.
+* flight_controller.py: A MAVLink telemetry decoder bridging your RPi to the F722. It passively monitors comprehensive OSD stats (altitude, voltage, current, mAh, RSSI, throttle, flight mode) and dynamically calculates real-time Distance to Home for the display.
 
 6. The Helper Folders
 ---------------------

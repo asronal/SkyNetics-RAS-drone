@@ -87,27 +87,35 @@ class OSDRenderer:
         pitch = fc.get("pitch", 0.0)
         roll = fc.get("roll", 0.0)
         hdg = fc.get("heading", 0.0)
+        mode = fc.get("mode", "UNKNOWN")
+        rssi = fc.get("rssi", 0)
+        throttle = fc.get("throttle", 0)
+        batt_rem = fc.get("batt_rem", 0)
+        current_a = fc.get("current_a", 0.0)
+        batt_mah = fc.get("batt_mah", 0)
+        dist_home = fc.get("dist_home", 0.0)
 
         # ── 1. Top Left: LAT / LON ──────────────────────────────
         _o(out, f"LAT {lat: .7f}", (40, 50), 0.6, OSD_WHITE, 2, spacing=4)
         _o(out, f"LON {lon: .7f}", (40, 85), 0.6, OSD_WHITE, 2, spacing=4)
 
-        # ── 2. Top Right: Recording Timer ───────────────────────
+        # ── 2. Top Right: RSSI & Timer ──────────────────────────────
         fly_sec = int(time.time() - START_TIME)
         fly_mn = fly_sec // 60
         fly_s = fly_sec % 60
-        _o(out, f"{fly_mn:02d}:{fly_s:02d}", (W - 120, 50), 0.5, OSD_WHITE, 2)
+        _o(out, f"RSSI {rssi}%", (W - 130, 30), 0.5, OSD_WHITE, 2)
+        _o(out, f"{fly_mn:02d}:{fly_s:02d}", (W - 130, 60), 0.5, OSD_WHITE, 2)
         if recording:
-            _o(out, "REC", (W - 170, 50), 0.5, OSD_RED, 2)
+            _o(out, "REC", (W - 180, 60), 0.5, OSD_RED, 2)
 
-        # ── 3. Bottom left panel ───────────────────────────────
+        # ── 3. Bottom left panel (Power) ───────────────────────
         by = H - 120
-        # Battery full voltage
-        _o(out, f"BAT  {volts:.1f} v", (40, by), 0.6, OSD_WHITE, 2, spacing=4)
-        # Fly mn
-        _o(out, f"FLY  {fly_mn:02d}:{fly_s:02d}", (40, by + 40), 0.6, OSD_WHITE,  2, spacing=4)
-        # Temperature (Drone / Ambient)
-        _o(out, f"C    35~C", (40, by + 80), 0.6, OSD_WHITE, 2, spacing=4)
+        # Battery voltage & remaining %
+        _o(out, f"BAT  {volts:.1f}V   {batt_rem}%", (40, by), 0.6, OSD_WHITE, 2, spacing=4)
+        # Current draw
+        _o(out, f"AMP  {current_a:.1f} A", (40, by + 40), 0.6, OSD_WHITE, 2, spacing=4)
+        # Capacity consumed
+        _o(out, f"MAH  {batt_mah}", (40, by + 80), 0.6, OSD_WHITE, 2, spacing=4)
 
         # ── 4. Center-Left Disarm Status ───────────────────────
         cx_left = W // 2 - 250
@@ -116,14 +124,15 @@ class OSDRenderer:
         
         status_txt = "ARMED" if armed else "DISARMED"
         _o(out, status_txt, (cx_left, by + 40), 0.7, OSD_WHITE, 2, spacing=6)
+        _o(out, f"MODE {mode}", (cx_left, by + 80), 0.6, OSD_WHITE, 2, spacing=4)
 
         # ── 5. Center-right Telemetry ──────────────────────────
         cx_right = W // 2 + 150
         ry = H // 2 - 50
-        _o(out, f"H   -", (cx_right, ry), 0.6, OSD_WHITE, 2, spacing=4)
-        _o(out, f"fly hr -", (cx_right, ry + 40), 0.4, OSD_WHITE, 1, spacing=2)
-        _o(out, f"SAT {sats}", (cx_right, ry + 80), 0.6, OSD_WHITE, 2, spacing=4)
-        _o(out, f"ALT {alt:.1f} M", (cx_right - 10, ry + 120), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"HOME {dist_home:.0f} M", (cx_right, ry), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"THR  {throttle}%", (cx_right, ry + 40), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"SAT  {sats}", (cx_right, ry + 80), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"ALT  {alt:.1f} M", (cx_right - 10, ry + 120), 0.6, OSD_WHITE, 2, spacing=4)
 
         # ── 6. Bottom Center: Alert / Flip Switch ──────────────
         if num_humans > 0:

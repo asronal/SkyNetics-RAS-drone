@@ -15,12 +15,21 @@ A high-performance, completely offline, multi-sensor fusion system designed to a
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
 
 ### 🎥 System Demo
-
-https://github.com/asronal/SkyNetics-rescue-drone/raw/main/assets/demo.mp4
+<p align="center">
+  <a href="https://github.com/asronal/SkyNetics-rescue-drone/raw/main/assets/demo.mp4">
+    <img src="assets/osd_main.jpg" alt="Click to watch System Demo Video" width="100%">
+  </a>
+  <br>
+  <em>Click the image above to download/watch the System Demo video</em>
+</p>
 
 ---
 
 ## 🏗️ Project Architecture
+
+<p align="center">
+  <img src="assets/drone_architecture.png" alt="Drone System Architecture" width="100%">
+</p>
 
 The architecture isolates the AI models, the visual UI, and the hardware interfaces into self-contained modules.
 

@@ -6,6 +6,10 @@
 ![AI](https://img.shields.io/badge/AI-YOLOv8%20ONNX-FF6F00?style=for-the-badge&logo=yolo)
 ![Hardware](https://img.shields.io/badge/Sensors-MLX90640%20%7C%20LD2450%20%7C%20PiCAM3-10B981?style=for-the-badge)
 
+<p align="center">
+  <img src="assets/osd_showcase.png" alt="Rescue Drone OSD Interface" width="100%">
+</p>
+
 A high-performance, completely offline, multi-sensor fusion system designed to aid Search and Rescue operations by identifying human targets buried under snow or debris from an aerial perspective. 
 
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.

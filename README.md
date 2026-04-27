@@ -16,7 +16,11 @@ It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and 
 
 ### 🎥 System Demo
 <p align="center">
-  <video src="assets/demo.mp4" width="100%" controls></video>
+  <a href="assets/demo.mp4">
+    <img src="assets/osd_main.jpg" alt="Click to watch System Demo Video" width="100%">
+  </a>
+  <br>
+  <em>Click the image above to watch the System Demo video (assets/demo.mp4)</em>
 </p>
 
 ### 📺 OSD Detail View

@@ -1,0 +1,55 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# rescue_drone.service — systemd Auto-Start Service for Rescue Drone v3
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# What this does:
+#   Tells the Raspberry Pi to automatically launch the detection system
+#   every time it boots up, with no keyboard or monitor needed.
+#
+# HOW TO INSTALL (run these commands once on the Pi):
+#
+#   sudo cp rescue_drone.service /etc/systemd/system/
+#   sudo systemctl enable rescue_drone      ← auto-start on every boot
+#   sudo systemctl start rescue_drone       ← start it right now
+#
+# HOW TO MANAGE:
+#
+#   sudo systemctl stop rescue_drone        ← stop it
+#   sudo systemctl restart rescue_drone     ← restart (after a code change)
+#   sudo systemctl status rescue_drone      ← check if it's running / crashed
+#   journalctl -u rescue_drone -f           ← watch the live log
+#
+# HOW TO DISABLE AUTO-START:
+#
+#   sudo systemctl disable rescue_drone
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+[Unit]
+Description=Rescue Drone v3 — Human Detection System
+# Wait until the system is fully up before starting
+After=network.target
+
+[Service]
+# Run as the default Pi user
+User=pi
+
+# IMPORTANT: Change this path if your project folder is somewhere else
+WorkingDirectory=/home/raspi_a/drone/rescue_drone_osd_fixed
+
+# --fc-enabled  turns on MAVLink telemetry reading from the BotWing F722
+# Remove --fc-enabled if the flight controller is not connected
+ExecStart=/usr/bin/python3 main.py --fc-enabled
+
+# If the script crashes for any reason, restart it after 5 seconds
+Restart=on-failure
+RestartSec=5
+
+# All print() and logger output goes to the systemd journal
+# View it live with: journalctl -u rescue_drone -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+# Start this service when the Pi reaches normal multi-user mode (standard boot)
+WantedBy=multi-user.target

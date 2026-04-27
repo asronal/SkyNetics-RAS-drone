@@ -1,0 +1,29 @@
+# Rescue Drone v3 — Requirements
+# Exact hardware: BotWing F722 | MLX90640 | RPi Cam 3 | HLK-LD2410C-P
+
+# ── Core ──────────────────────────────────────────────────────────
+numpy>=1.24.0
+opencv-python>=4.8.0
+
+# ── ONNX Runtime (YOLOv8 inference on RPi4) ──────────────────────
+onnxruntime>=1.16.0
+
+# ── Tracking ──────────────────────────────────────────────────────
+# scipy is optional (used for linear_sum_assignment in tracker);
+# the tracker falls back to greedy matching if not available.
+scipy>=1.10.0
+
+# ── Serial (LD2410C-P radar + F722 FC) ───────────────────────────
+pyserial>=3.5
+pymavlink>=2.4.40
+
+# ── RPi Camera Module 3 (libcamera) ──────────────────────────────
+# sudo apt install python3-picamera2
+# (system package — do not pip install on RPi)
+
+# ── MLX90640 (install on RPi only) ───────────────────────────────
+# pip install adafruit-circuitpython-mlx90640 adafruit-blinka
+
+# ── Training only (laptop/GPU — NOT on RPi) ──────────────────────
+# ultralytics>=8.0.0
+# torch>=2.0.0

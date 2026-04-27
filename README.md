@@ -15,9 +15,8 @@ A high-performance, completely offline, multi-sensor fusion system designed to a
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
 
 ### 🎥 System Demo
-<p align="center">
-  <video src="assets/demo.mp4" width="100%" controls></video>
-</p>
+
+https://github.com/asronal/SkyNetics-rescue-drone/raw/main/assets/demo.mp4
 
 ---
 
@@ -91,7 +90,7 @@ To stream the fullscreen OSD directly to your pilot goggles, wire the Pi 4's 3.5
 * **F722 TX** `➔` RPi RX (e.g. GPIO 1 / Pin 28 for UART2)
 * **F722 RX** `➔` RPi TX (e.g. GPIO 0 / Pin 27 for UART2)
 * **GND**     `➔` Shared RPi GND
-> *Ensure Betaflight Ports tab has MSP enabled at 115200 baud for this UART.*
+> *Ensure INav Ports tab has MSP enabled at 115200 baud for this UART.*
 
 ### 5. RPi Camera Module 3 (CSI)
 * Connect via CSI ribbon cable to the primary `CAM` port on the Pi 4. The silver contacts on the ribbon should face the HDMI ports.

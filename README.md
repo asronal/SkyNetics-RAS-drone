@@ -14,6 +14,16 @@ A high-performance, completely offline, multi-sensor fusion system designed to a
 
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
 
+### 🎥 System Demo
+<p align="center">
+  <video src="assets/demo.mp4" width="100%" controls></video>
+</p>
+
+### 📺 OSD Detail View
+<p align="center">
+  <img src="assets/osd_main.jpg" alt="OSD Detail View" width="100%">
+</p>
+
 ---
 
 ## 🏗️ Project Architecture
@@ -66,6 +76,10 @@ To stream the fullscreen OSD directly to your pilot goggles, wire the Pi 4's 3.5
 > `sdtv_mode=2` (Use `2` for PAL, `0` for NTSC)
 
 ### 2. MLX90640 Thermal Sensor (I2C)
+<p align="center">
+  <img src="assets/thermal_demo.jpg" alt="Thermal Sensor Demo" width="80%">
+</p>
+
 * **VCC**  `➔` RPi Pin 1 (3.3V)
 * **GND**  `➔` RPi Pin 6 (GND)
 * **SDA**  `➔` RPi Pin 3 (GPIO 2, I2C1)
@@ -147,6 +161,10 @@ python3 main.py --demo
 ---
 
 ## 📡 Radar Capabilities Note
+<p align="center">
+  <img src="assets/radar_demo.jpg" alt="Radar Tracking Demo" width="80%">
+</p>
+
 The integrated **LD2450** mmWave sensor excels at penetrative tracking.
 * **Can Do:** Detect stationary sub-surface targets (like buried breathing survivors), trace moving targets through fog, and provide confidence metrics.
 * **Cannot Do:** XYZ positional point-clouds, visual imaging, or replace the primary thermal array. It is heavily weighted as a *presence confirmation* tool within the SensorFusion class.

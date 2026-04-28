@@ -14,6 +14,36 @@ A high-performance, completely offline, multi-sensor fusion system designed to a
 
 It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
 
+---
+
+## 👥 Team
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/asronal">
+        <img src="https://github.com/asronal.png" width="90" height="90" style="border-radius: 50%"><br><br>
+        <b>Asronal</b>
+      </a><br>
+      <sub>Lead Developer</sub>
+    </td>
+    <td align="center">
+      <a href="https://github.com/AnujD21">
+        <img src="https://github.com/AnujD21.png" width="90" height="90" style="border-radius: 50%"><br><br>
+        <b>Anuj D</b>
+      </a><br>
+      <sub>Contributor</sub>
+    </td>
+    <td align="center">
+      <a href="https://github.com/vishal6626">
+        <img src="https://github.com/vishal6626.png" width="90" height="90" style="border-radius: 50%"><br><br>
+        <b>Vishal</b>
+      </a><br>
+      <sub>Contributor</sub>
+    </td>
+  </tr>
+</table>
+
 ### 🎥 System Demo
 <p align="center">
   <a href="https://github.com/asronal/SkyNetics-rescue-drone/raw/main/assets/demo.mp4">
@@ -170,4 +200,4 @@ python3 main.py --demo
 
 The integrated **LD2450** mmWave sensor excels at penetrative tracking.
 * **Can Do:** Detect stationary sub-surface targets (like buried breathing survivors), trace moving targets through fog, and provide confidence metrics.
-* **Cannot Do:** XYZ positional point-clouds, visual imaging, or replace the primary thermal array. It is heavily weighted as a *presence confirmation* tool within the SensorFusion class.
+ * **Cannot Do:** XYZ positional point-clouds, visual imaging, or replace the primary thermal array. It is heavily weighted as a *presence confirmation* tool within the SensorFusion class.

@@ -25,21 +25,21 @@ It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and 
         <img src="https://github.com/asronal.png" width="90" height="90" style="border-radius: 50%"><br><br>
         <b>Asronal</b>
       </a><br>
-      <sub>Lead Developer</sub>
+      <sub>Hardware Developer and Integrations</sub>
     </td>
     <td align="center">
       <a href="https://github.com/AnujD21">
         <img src="https://github.com/AnujD21.png" width="90" height="90" style="border-radius: 50%"><br><br>
         <b>Anuj D</b>
       </a><br>
-      <sub>Contributor</sub>
+      <sub>Software Developer</sub>
     </td>
     <td align="center">
       <a href="https://github.com/vishal6626">
         <img src="https://github.com/vishal6626.png" width="90" height="90" style="border-radius: 50%"><br><br>
         <b>Vishal</b>
       </a><br>
-      <sub>Contributor</sub>
+      <sub>Software Developer</sub>
     </td>
   </tr>
 </table>

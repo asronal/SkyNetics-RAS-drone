@@ -69,6 +69,8 @@ class OSDRenderer:
         total_ms:        float  = 0.0,
         fc_telemetry:    Optional[dict] = None,
         anomaly_triggered: bool = False,
+        inference_fps:   float  = 0.0,
+        video_fps:       float  = 0.0,
     ) -> np.ndarray:
         out = frame.copy()
         H, W = out.shape[:2]
@@ -94,6 +96,20 @@ class OSDRenderer:
         current_a = fc.get("current_a", 0.0)
         batt_mah = fc.get("batt_mah", 0)
         dist_home = fc.get("dist_home", 0.0)
+
+        # ── 0. Top Center: FPS Metrics ──────────────────────────
+        ifps_col  = OSD_GREEN  if inference_fps >= 3.0 else OSD_ORANGE
+        vfps_col  = OSD_GREEN  if video_fps     >= 15.0 else OSD_ORANGE
+        ifps_txt  = f"INF {inference_fps:4.1f} FPS"
+        vfps_txt  = f"VID {video_fps:4.1f} FPS"
+        ifps_w    = cv2.getTextSize(ifps_txt, FONT, 0.52, 2)[0][0]
+        vfps_w    = cv2.getTextSize(vfps_txt, FONT, 0.52, 2)[0][0]
+        gap       = 24
+        total_w   = ifps_w + gap + vfps_w
+        fx        = cx - total_w // 2
+        fy        = 30
+        _o(out, ifps_txt, (fx, fy), 0.52, ifps_col, 2)
+        _o(out, vfps_txt, (fx + ifps_w + gap, fy), 0.52, vfps_col, 2)
 
         # ── 1. Top Left: LAT / LON ──────────────────────────────
         _o(out, f"LAT {lat: .7f}", (40, 50), 0.6, OSD_WHITE, 2, spacing=4)

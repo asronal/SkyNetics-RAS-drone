@@ -80,6 +80,11 @@ class RescueDisplay:
         self._last_snapshot_time = {} # track_id -> timestamp
         self._osd      = OSDRenderer(cfg)
 
+        # Rolling video-FPS tracker (display render rate)
+        self._vfps_buf: list = []
+        self._vfps_last: float = time.time()
+        self._video_fps: float = 0.0
+
         cv2.namedWindow(self._WIN, cv2.WINDOW_NORMAL)
         if getattr(cfg, 'fullscreen', True):
             cv2.setWindowProperty(self._WIN, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
@@ -90,7 +95,16 @@ class RescueDisplay:
             self._writer = cv2.VideoWriter(cfg.output_video, fourcc, 8, (self.W, self.H))
 
     def render(self, fd: FrameData):
-        import time
+        # -- Video FPS (rolling 30-frame average) --
+        now_t = time.time()
+        elapsed = now_t - self._vfps_last
+        self._vfps_last = now_t
+        if elapsed > 0:
+            self._vfps_buf.append(elapsed)
+            if len(self._vfps_buf) > 30:
+                self._vfps_buf.pop(0)
+            self._video_fps = 1.0 / (sum(self._vfps_buf) / len(self._vfps_buf))
+
         canvas = self._build(fd)
         if self._writer: self._writer.write(canvas)
         cv2.imshow(self._WIN, canvas)
@@ -167,6 +181,8 @@ class RescueDisplay:
             total_ms       = fd.timing_ms.get("total_ms", 0),
             fc_telemetry   = fc_telemetry,
             anomaly_triggered = getattr(fd, "anomaly_triggered", False),
+            inference_fps  = fd.fps,
+            video_fps      = self._video_fps,
         )
 
         # Overlay Thermal PiP if NOT Main View and PiP is enabled

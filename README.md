@@ -12,7 +12,7 @@
 
 A high-performance, completely offline, multi-sensor fusion system designed to aid Search and Rescue operations by identifying human targets buried under snow or debris from an aerial perspective. 
 
-It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles.
+It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and flag survivors, instantly projecting an augmented OSD (On-Screen Display) through an analog VTX to the pilot's goggles or laptop via an OTG receiver.
 
 ---
 

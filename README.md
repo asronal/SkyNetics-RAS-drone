@@ -39,7 +39,7 @@ It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and 
         <img src="https://github.com/vishal6626.png" width="90" height="90" style="border-radius: 50%"><br><br>
         <b>Vishal</b>
       </a><br>
-      <sub>Software Developer</sub>
+      <sub>Model Training</sub>
     </td>
   </tr>
 </table>

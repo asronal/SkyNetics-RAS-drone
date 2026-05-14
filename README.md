@@ -44,7 +44,7 @@ It fuses **RGB visuals, Thermal Blob Anomalies, and mmWave Radar** to track and 
     <td align="center">
       <a href="https://github.com/Akilan12335">
         <img src="https://github.com/Akilan12335.png" width="90" height="90" style="border-radius: 50%"><br><br>
-        <b>Asronal</b>
+        <b>Akilan S</b>
       </a><br>
       <sub>Hardware Assembly</sub>
     </td>

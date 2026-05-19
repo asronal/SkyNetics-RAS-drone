@@ -240,4 +240,10 @@ That said, we're realistic about what it can and can't do. It won't give you a 3
 
 ---
 
+<p align="center">
+  <em>"The goal was never to build something impressive. It was to build something that could save a life."</em>
+</p>
+
+---
+
 *Built with a lot of care, more than a few all-nighters, and the hope that this kind of technology actually makes it into the hands of rescue teams someday. If you're working on something similar or want to build on top of this — reach out.*

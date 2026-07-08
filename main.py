@@ -98,7 +98,11 @@
 
 import sys
 import argparse
+import dataclasses
 import logging
+import threading
+import time
+
 from config import Config
 from pipeline.detection_pipeline import DetectionPipeline
 from display.rescue_display import RescueDisplay
@@ -158,16 +162,57 @@ def main():
     try:
         logger.info("Initializing all systems...")
         pipeline.initialize()
-
-        # Detection starts immediately — no arm-gate.
-        # The service file ensures this runs automatically on Pi boot.
         logger.info("Ready. Q=quit  S=snapshot")
 
-        for fd in pipeline.run():
-            if display:
-                display.render(fd)
-                if display.should_quit():
-                    break
+        if cfg.headless:
+            # ── Headless: synchronous pipeline loop ──────────────
+            for fd in pipeline.run():
+                pass
+
+        else:
+            # ── Inference thread (thermal-gated, ~4 fps) ─────────
+            # Runs YOLO / anomaly / fusion / tracking in the background.
+            _state: dict = {"fd": None}
+            _lock = threading.Lock()
+
+            def _inference_loop():
+                for fd in pipeline.run():
+                    with _lock:
+                        _state["fd"] = fd
+
+            inf_thread = threading.Thread(
+                target=_inference_loop, daemon=True, name="inference"
+            )
+            inf_thread.start()
+
+            # ── Display loop — up to 30 fps ───────────────────────
+            # On every tick we grab the FRESHEST RGB frame straight from
+            # RGBCamera (already thread-safe) so video plays smoothly even
+            # while the inference thread is mid-YOLO.  Detection overlays
+            # are at most one inference cycle stale but visually fine.
+            TARGET_FPS = 30
+            target_dt  = 1.0 / TARGET_FPS
+
+            while inf_thread.is_alive():
+                t0 = time.perf_counter()
+
+                with _lock:
+                    fd = _state["fd"]
+
+                if fd is not None:
+                    # Always use the freshest camera frame for smooth video
+                    fresh_rgb = pipeline.rgb.read()
+                    if fresh_rgb is not None:
+                        fd = dataclasses.replace(fd, rgb_frame=fresh_rgb)
+
+                    display.render(fd)
+                    if display.should_quit():
+                        break
+
+                elapsed  = time.perf_counter() - t0
+                sleep_t  = target_dt - elapsed
+                if sleep_t > 0:
+                    time.sleep(sleep_t)
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
@@ -182,3 +227,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -12,7 +12,7 @@ from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 from ml.detection import Detection
 
-OSD_WHITE   = (240, 240, 240)
+OSD_WHITE   = (255, 255, 255)   # pure white for maximum contrast
 OSD_GREEN   = (60,  220, 80)
 OSD_RED     = (210, 30,  30)
 OSD_CYAN    = (40,  210, 200)
@@ -48,7 +48,7 @@ def _o(img: np.ndarray, text: str, pos, font: ImageFont.FreeTypeFont = None,
        color=OSD_WHITE, shadow: bool = True):
     """
     Draw Montserrat text onto a BGR numpy array via PIL.
-    Uses an 8-direction 1px black outline for legibility over any background.
+    Uses PIL's native stroke for a clean, thin black outline.
     """
     if font is None:
         font = _F_MED
@@ -60,13 +60,11 @@ def _o(img: np.ndarray, text: str, pos, font: ImageFont.FreeTypeFont = None,
     x, y = pos
 
     if shadow:
-        # Thin outline: stamp black text at all 8 surrounding pixels
-        for dx, dy in [(-1,-1),(-1, 0),(-1, 1),
-                       ( 0,-1),         ( 0, 1),
-                       ( 1,-1),( 1, 0),( 1, 1)]:
-            draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
-
-    draw.text((x, y), text, font=font, fill=rgb)
+        # Native PIL stroke — 2px black outline, single draw call
+        draw.text((x, y), text, font=font, fill=rgb,
+                  stroke_width=2, stroke_fill=(0, 0, 0))
+    else:
+        draw.text((x, y), text, font=font, fill=rgb)
 
     result = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
     img[:] = result

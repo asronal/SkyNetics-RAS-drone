@@ -21,3 +21,6 @@ output/*
 .vscode/
 .idea/
 *.swp
+
+# Local beta testing folder
+beta/

@@ -17,8 +17,8 @@ OSD_CYAN    = (200, 210, 40)
 OSD_ORANGE  = (0,   140, 255)
 OSD_GRAY    = (140, 140, 140)
 
-# Use widely spaced font
-FONT        = cv2.FONT_HERSHEY_DUPLEX
+# Use refined triplex font for a premium OSD look
+FONT        = cv2.FONT_HERSHEY_TRIPLEX
 FONT_SMALL  = cv2.FONT_HERSHEY_PLAIN
 FONT_THIN   = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -125,7 +125,8 @@ class OSDRenderer:
             _o(out, "REC", (W - 180, 60), 0.5, OSD_RED, 2)
 
         # ── 3. Bottom left panel (Power) ───────────────────────
-        by = H - 120
+        # Push panel up enough so the 3rd row (by+80) clears the alert banner at H-40
+        by = H - 160
         # Battery voltage & remaining %
         _o(out, f"BAT  {volts:.1f}V   {batt_rem}%", (40, by), 0.6, OSD_WHITE, 2, spacing=4)
         # Current draw

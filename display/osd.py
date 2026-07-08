@@ -125,14 +125,15 @@ class OSDRenderer:
             _o(out, "REC", (W - 180, 60), 0.5, OSD_RED, 2)
 
         # ── 3. Bottom left panel (Power) ───────────────────────
-        # Push panel up enough so the 3rd row (by+80) clears the alert banner at H-40
+        # NOTE: x=360 keeps labels right of the thermal PiP (PiP occupies x=20–340)
         by = H - 160
+        bat_x = 360
         # Battery voltage & remaining %
-        _o(out, f"BAT  {volts:.1f}V   {batt_rem}%", (40, by), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"BAT  {volts:.1f}V   {batt_rem}%", (bat_x, by), 0.6, OSD_WHITE, 2, spacing=4)
         # Current draw
-        _o(out, f"AMP  {current_a:.1f} A", (40, by + 40), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"AMP  {current_a:.1f} A", (bat_x, by + 40), 0.6, OSD_WHITE, 2, spacing=4)
         # Capacity consumed
-        _o(out, f"MAH  {batt_mah}", (40, by + 80), 0.6, OSD_WHITE, 2, spacing=4)
+        _o(out, f"MAH  {batt_mah}", (bat_x, by + 80), 0.6, OSD_WHITE, 2, spacing=4)
 
         # ── 4. Center-Left Disarm Status ───────────────────────
         cx_left = W // 2 - 250

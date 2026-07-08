@@ -48,8 +48,7 @@ def _o(img: np.ndarray, text: str, pos, font: ImageFont.FreeTypeFont = None,
        color=OSD_WHITE, shadow: bool = True):
     """
     Draw Montserrat text onto a BGR numpy array via PIL.
-    pos = (x, y) — top-left of text baseline (matching the old cv2 convention).
-    Colors are BGR tuples (same as rest of codebase); converted internally.
+    Uses an 8-direction 1px black outline for legibility over any background.
     """
     if font is None:
         font = _F_MED
@@ -61,7 +60,12 @@ def _o(img: np.ndarray, text: str, pos, font: ImageFont.FreeTypeFont = None,
     x, y = pos
 
     if shadow:
-        draw.text((x + 1, y + 1), text, font=font, fill=(0, 0, 0))
+        # Thin outline: stamp black text at all 8 surrounding pixels
+        for dx, dy in [(-1,-1),(-1, 0),(-1, 1),
+                       ( 0,-1),         ( 0, 1),
+                       ( 1,-1),( 1, 0),( 1, 1)]:
+            draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
+
     draw.text((x, y), text, font=font, fill=rgb)
 
     result = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)

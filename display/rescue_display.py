@@ -197,6 +197,23 @@ class RescueDisplay:
             cv2.rectangle(canvas, (pip_x-2, pip_y-2), (pip_x+pip_w+1, pip_y+pip_h+1), BORDER, 2)
             canvas[pip_y:pip_y+pip_h, pip_x:pip_x+pip_w] = thermal_pip
 
+            # ── Battery info overlaid on top of PiP ──────────────────
+            fc_pip = fd.fc_telemetry or {}
+            volts_pip    = fc_pip.get("battery_v", 0.0)
+            batt_rem_pip = fc_pip.get("batt_rem", 0)
+            current_pip  = fc_pip.get("current_a", 0.0)
+            batt_mah_pip = fc_pip.get("batt_mah", 0)
+
+            # Semi-transparent dark strip at top of PiP for readability
+            strip_h = 90
+            overlay = canvas.copy()
+            cv2.rectangle(overlay, (pip_x, pip_y), (pip_x + pip_w, pip_y + strip_h), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.50, canvas, 0.50, 0, canvas)
+
+            _txt(canvas, f"BAT  {volts_pip:.1f}V  {batt_rem_pip}%", (pip_x + 8, pip_y + 24), 0.48, WHITE)
+            _txt(canvas, f"AMP  {current_pip:.1f} A",               (pip_x + 8, pip_y + 52), 0.48, WHITE)
+            _txt(canvas, f"MAH  {batt_mah_pip}",                     (pip_x + 8, pip_y + 80), 0.48, WHITE)
+
         return canvas
 
     # ── Thermal pane ──────────────────────────────────────────────

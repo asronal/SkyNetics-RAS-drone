@@ -49,3 +49,11 @@ CLAUDE.md
 
 # Local beta testing folder
 beta/
+
+# Generated models (int8 quantized via tools/quantize_yolo.py)
+models/*_int8.onnx
+
+# Local notes / handoff docs
+docs/
+CLAUDE.md
+.remember/

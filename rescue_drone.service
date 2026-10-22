@@ -27,19 +27,26 @@
 
 [Unit]
 Description=Rescue Drone v3 — Human Detection System
-# Wait until the system is fully up before starting
-After=network.target
+# The display paths need the X desktop (lightdm) — start after it. If X is not
+# accepting connections yet the app exits and Restart= below tries again.
+After=graphical.target
 
 [Service]
 # Run as the default Pi user
 User=pi
 
-# IMPORTANT: Change this path if your project folder is somewhere else
-WorkingDirectory=/home/raspi_a/drone/rescue_drone_osd_fixed
+# IMPORTANT: Change these paths if your project folder / venv is somewhere else
+WorkingDirectory=/home/pi/SkyNetics-RAS-drone
+
+# The desktop session's display — the GPU display (and the OpenCV window)
+# draw into it.
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
 
 # --fc-enabled  turns on MAVLink telemetry reading from the BotWing F722
 # Remove --fc-enabled if the flight controller is not connected
-ExecStart=/usr/bin/python3 main.py --fc-enabled
+# ~/venv has picamera2, PyQt5, onnxruntime and Blinka (system python3 lacks them).
+ExecStart=/home/pi/venv/bin/python main.py --fc-enabled
 
 # If the script crashes for any reason, restart it after 5 seconds
 Restart=on-failure
@@ -51,5 +58,5 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-# Start this service when the Pi reaches normal multi-user mode (standard boot)
-WantedBy=multi-user.target
+# Start this service when the Pi reaches the desktop (graphical) boot target
+WantedBy=graphical.target

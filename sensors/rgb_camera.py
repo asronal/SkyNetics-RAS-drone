@@ -67,7 +67,6 @@ from typing import Optional
 
 logger = logging.getLogger("rgb")
 
-_WARMUP_FRAMES: int = 30
 WATCHDOG_TIMEOUT_S: float = 5.0
 
 # IMX708 full-frame sensor readout size — keeps PDAF data valid.
@@ -211,6 +210,7 @@ class RGBCamera:
             logger.info("[RGB] Demo mode")
             return True
 
+        cam = None
         try:
             from picamera2 import Picamera2
 
@@ -280,6 +280,12 @@ class RGBCamera:
             logger.warning("[RGB] picamera2 not found — trying OpenCV fallback")
         except Exception as e:
             logger.warning(f"[RGB] Picamera2 init failed: {e} — trying OpenCV fallback")
+            # Release the camera, or every later open (watchdog restart) finds it busy.
+            if cam is not None:
+                try:
+                    cam.close()
+                except Exception:
+                    pass
 
         # OpenCV fallback (USB cameras / v4l2)
         try:
@@ -353,7 +359,6 @@ class RGBCamera:
             return
 
         h, w = self.cfg.rgb_height, self.cfg.rgb_width
-        frame_count = 0
 
         while not self._stop_event.is_set():
             try:
@@ -367,31 +372,32 @@ class RGBCamera:
                     # capture_request() correctly recycles the DMA ring buffer.
                     # capture_array() re-allocates on every call → deadlock after frame 1.
                     while True:
-                        request = cam.capture_request()
+                        # Watchdog: if the ISP/CSI bus stalls, restart. A plain
+                        # capture_request() blocks forever on a stalled camera,
+                        # so wait on the job with a timeout instead.
+                        job = cam.capture_request(wait=False)
+                        try:
+                            request = cam.wait(job, timeout=WATCHDOG_TIMEOUT_S)
+                        except TimeoutError:
+                            logger.error(f"[RGB] Watchdog: no frame for >{WATCHDOG_TIMEOUT_S:.0f}s — restarting pipeline")
+                            cam.cancel_all_and_flush()
+                            break
                         if request is None: break
-                        
+
                         if self._stop_event.is_set():
                             request.release()
                             break
 
-                        with self._lock:
-                            last_t = self._last_capture_time
-
-                        # Watchdog: if the ISP/CSI bus stalls again, restart
-                        if frame_count > _WARMUP_FRAMES and (time.time() - last_t) > WATCHDOG_TIMEOUT_S:
-                            logger.error("[RGB] Watchdog: no frame for >5s — restarting pipeline")
-                            request.release()
-                            break
-
-                        frame = request.make_array("main")
+                        try:
+                            frame = request.make_array("main")
+                        finally:
+                            request.release()   # always hand the buffer back, or the camera runs dry
                         # libcamera formats as RGB, OpenCV expects BGR. Flip channels.
                         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                        request.release()
 
                         if frame.shape[0] != h or frame.shape[1] != w:
                             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
-                        frame_count += 1
                         with self._lock:
                             self._frame = frame
                             self._last_capture_time = time.time()
@@ -405,7 +411,6 @@ class RGBCamera:
                     logger.info("[RGB] Restarting camera pipeline...")
                     self._close_hardware()
                     time.sleep(2.0)   # let /dev/media FDs fully release
-                    frame_count = 0
                     with self._lock:
                         self._last_capture_time = time.time()
                         self._fps_buf.clear()   # don't let the restart gap skew measured fps
@@ -421,7 +426,6 @@ class RGBCamera:
                     if ret and frame is not None:
                         if frame.shape[0] != h or frame.shape[1] != w:
                             frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
-                        frame_count += 1
                         with self._lock:
                             self._frame = frame
                             self._last_capture_time = time.time()

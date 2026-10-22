@@ -10,10 +10,11 @@ F722 Setup (INAV Configurator):
     Telemetry Output -> MAVLink
     Baud -> 115200
 
-Wiring (RPi4 to FC):
-  FC TX (Telemetry) → RPi GPIO15 / Pin 10 (UART0 RX)
-  FC RX (Optional)  → RPi GPIO14 / Pin 8  (UART0 TX)
+Wiring (RPi4 to FC — UART2; UART0 is the radar's, see README / config.py):
+  FC TX (Telemetry) → RPi GPIO1 / Pin 28 (UART2 RX)
+  FC RX (Optional)  → RPi GPIO0 / Pin 27 (UART2 TX)
   GND               → GND (Pin 6, 9, 14, etc.)
+  UART2 needs `dtoverlay=uart2`; port: cfg.fc_port.
   *Note: Only connect 5V if powering the Pi from the FC (not recommended for Pi4).*
 
 Raspberry Pi 4 Setup for UART:
@@ -38,6 +39,10 @@ from typing import Optional
 
 logger = logging.getLogger("flight_ctrl")
 
+# The FC sends a HEARTBEAT every second. A silent link (cable unplugged, FC
+# rebooted) raises no error on a serial port, so it is detected by timeout.
+_HEARTBEAT_TIMEOUT_S = 5.0
+
 
 class FlightController:
     """
@@ -61,6 +66,7 @@ class FlightController:
 
         self._reconnect_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._last_heartbeat = 0.0
         self._home_lat = None
         self._home_lon = None
 
@@ -138,13 +144,16 @@ class FlightController:
     # ── Internal: Connection ──────────────────────────────────────
 
     def _connect(self) -> bool:
+        master = None
         try:
             from pymavlink import mavutil
 
             master = mavutil.mavlink_connection(self.cfg.fc_port, baud=self.cfg.fc_baud)
 
-            # Wait for a heartbeat (confirms FC is alive)
-            master.wait_heartbeat(timeout=3.0)
+            # Wait for a heartbeat (confirms FC is alive). wait_heartbeat()
+            # returns None on timeout rather than raising.
+            if master.wait_heartbeat(timeout=3.0) is None:
+                raise TimeoutError("no heartbeat within 3s")
 
             # Ask FC to stream all telemetry messages at 10 Hz.
             # This is a REQUEST — the FC decides whether to honour it.
@@ -160,6 +169,7 @@ class FlightController:
             with self._lock:
                 self._master = master
                 self._online = True
+                self._last_heartbeat = time.monotonic()
 
             logger.info(
                 f"[FC] MAVLink connected (read-only) | "
@@ -169,50 +179,71 @@ class FlightController:
 
         except ImportError:
             logger.error("[FC] pymavlink not installed — run: pip install pymavlink")
-            return False
         except Exception as e:
             logger.warning(f"[FC] Could not connect on {self.cfg.fc_port}: {e}")
-            return False
+        if master is not None:
+            try:
+                master.close()
+            except Exception:
+                pass
+        return False
+
+    def _drop_link(self):
+        """Mark the FC offline and close the port so a reconnect starts clean."""
+        with self._lock:
+            master, self._master = self._master, None
+            self._online = False
+        if master is not None:
+            try:
+                master.close()
+            except Exception:
+                pass
 
     # ── Internal: Receive Loop ────────────────────────────────────
 
     def _watchdog_loop(self):
         """Background thread: connect, read messages, reconnect on drop."""
-        # Attempt initial connection
-        if not self._online:
-            self._connect()
-
+        first = True
         while not self._stop_event.is_set():
-            if self._online and self._master is not None:
-                try:
-                    # Drain all pending messages without blocking
-                    while True:
-                        msg = self._master.recv_match(blocking=False)
-                        if msg is None:
-                            break
-                        self._handle(msg)
-                except Exception as e:
-                    logger.warning(f"[FC] Read error: {e}")
-                    with self._lock:
-                        self._online = False
+            if not self._online:
+                if not first:
+                    # FC dropped — wait then retry
+                    logger.warning(
+                        f"[FC] Disconnected — retrying in "
+                        f"{self.cfg.fc_heartbeat_interval_sec:.0f}s…"
+                    )
+                    if self._stop_event.wait(self.cfg.fc_heartbeat_interval_sec):
+                        break
+                first = False
+                if not self._connect():
+                    continue
 
-            elif not self._stop_event.is_set():
-                # FC dropped — wait then retry
-                logger.warning(
-                    f"[FC] Disconnected — retrying in "
-                    f"{self.cfg.fc_heartbeat_interval_sec:.0f}s…"
-                )
-                time.sleep(self.cfg.fc_heartbeat_interval_sec)
-                self._connect()
+            try:
+                # Drain all pending messages without blocking
+                while True:
+                    msg = self._master.recv_match(blocking=False)
+                    if msg is None:
+                        break
+                    self._handle(msg)
+            except Exception as e:
+                logger.warning(f"[FC] Read error: {e}")
+                self._drop_link()
+                continue
 
-            time.sleep(0.05)  # ~20 Hz poll rate
+            if time.monotonic() - self._last_heartbeat > _HEARTBEAT_TIMEOUT_S:
+                logger.warning(f"[FC] No heartbeat for {_HEARTBEAT_TIMEOUT_S:.0f}s — link lost")
+                self._drop_link()
+                continue
+
+            self._stop_event.wait(0.05)  # ~20 Hz poll rate
 
     def _handle(self, msg):
         """Parse a single incoming MAVLink message into the telemetry dict."""
         msg_type = msg.get_type()
         with self._lock:
             if msg_type == "SYS_STATUS":
-                self._telemetry["battery_v"] = msg.voltage_battery / 1000.0
+                if msg.voltage_battery != 0xFFFF:     # UINT16_MAX = voltage not sent
+                    self._telemetry["battery_v"] = msg.voltage_battery / 1000.0
                 if msg.current_battery >= 0:
                     self._telemetry["current_a"] = msg.current_battery / 100.0
                 if msg.battery_remaining >= 0:
@@ -250,6 +281,7 @@ class FlightController:
 
             elif msg_type == "HEARTBEAT":
                 from pymavlink import mavutil
+                self._last_heartbeat = time.monotonic()
                 armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 self._telemetry["armed"] = armed
                 self._telemetry["mode"]  = mavutil.mode_string_v10(msg)

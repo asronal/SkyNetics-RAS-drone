@@ -38,9 +38,10 @@ logger = logging.getLogger("thermal")
 W, H = 32, 24
 NPIX = W * H
 
-# Minimum seconds between getFrame() calls.
-# At 4Hz the sensor refreshes every 250ms — calling faster causes errors.
-_MIN_FRAME_INTERVAL_S: float = 0.23   # slightly under 250ms to avoid drift
+# Minimum seconds between the starts of getFrame() calls, and the back-off
+# after a failed read. A frame takes ~520ms at 4Hz, so back-to-back reads
+# are never held up by this.
+_MIN_FRAME_INTERVAL_S: float = 0.23
 
 
 def build_rescue_colormap() -> np.ndarray:
@@ -144,18 +145,21 @@ class ThermalCamera:
         if not self._online or self._sensor is None:
             return None, None
 
-        # Rate-limit: don't call getFrame() faster than the sensor refresh period.
-        # At 4Hz the sensor needs ~250ms to compute a new frame — calling sooner
-        # causes a ValueError / I2C timeout inside the adafruit library.
+        # Rate-limit: mainly a back-off after an I2C error, so a failing
+        # sensor isn't hammered (getFrame() waits for new data by itself).
         now = time.monotonic()
         if now - self._last_read_time < _MIN_FRAME_INTERVAL_S:
             return None, None   # pipeline will use last fused result — not an error
 
         try:
+            # Measured from the START of a read: getFrame() itself waits for the
+            # sensor's data-ready flag, so back-to-back reads are fine. Timing
+            # from the end added ~230ms of idle per frame and knocked the reads
+            # out of step with the sensor's subpages.
+            self._last_read_time = now
             self._sensor.getFrame(self._buf)
             raw = np.array(self._buf, dtype=np.float32).reshape(H, W)
             raw = np.fliplr(raw)
-            self._last_read_time = time.monotonic()
             return raw, self._to_visual(raw)
         except Exception as e:
             # We log exactly what failed on debug to trace I2C issues,

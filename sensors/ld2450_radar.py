@@ -8,15 +8,15 @@ Why this module is vastly superior for the Rescue Drone:
   3. Outputs velocity (Speed cm/s) and Distance directly.
   4. Max tracking distance is 8 Metres with a 60° azimuth.
 
-Wiring (RPi4 - Dual UART Setup):
-  Since UART0 (Pins 8/10) is used by the Flight Controller, we enable UART3 for the Radar.
-  1. Add `dtoverlay=uart3` to `/boot/firmware/config.txt` (or `/boot/config.txt`) and reboot.
-  2. Update your Python config to use `/dev/ttyAMA1` (the typical OS assigned port for UART3).
-  
-  LD2450 TX → RPi GPIO5 / Pin 29 (UART3 RX)
-  LD2450 RX → RPi GPIO4 / Pin 7  (UART3 TX)
+Wiring (RPi4 — UART0; the flight controller uses UART2, see README / config.py):
+  LD2450 TX → RPi GPIO15 / Pin 10 (UART0 RX)
+  LD2450 RX → RPi GPIO14 / Pin 8  (UART0 TX)
   5V        → 5V (Pin 2 or 4)
   GND       → GND (Pin 6, 14, or 30)
+
+  UART0 needs `dtoverlay=disable-bt` in /boot/firmware/config.txt, and
+  `console=serial0,115200` removed from /boot/firmware/cmdline.txt.
+  Port: cfg.ld2410_port (/dev/ttyAMA0).
 
 Data Protocol:
   Baud rate : 256000 (Set in your config file)
@@ -27,6 +27,7 @@ Data Protocol:
 """
 
 import logging
+import math
 import struct
 import serial
 import threading
@@ -38,6 +39,11 @@ logger = logging.getLogger("ld2450")
 
 FRAME_HEADER = bytes([0xAA, 0xFF, 0x03, 0x00])
 FRAME_END    = bytes([0x55, 0xCC])
+FRAME_LEN    = 30     # header 4 + 3 targets x 8 + footer 2
+
+# The radar reports ~10x/s. Older data means the radar stopped talking
+# (unplugged, UART error) — report no presence instead of the last targets forever.
+_STALE_S = 1.0
 
 
 @dataclass
@@ -49,7 +55,8 @@ class RadarTarget:
     
     @property
     def distance_cm(self) -> float:
-        return self.y_mm / 10.0
+        # Range to the target, not just its forward (Y) component.
+        return math.hypot(self.x_mm, self.y_mm) / 10.0
 
 
 @dataclass
@@ -138,7 +145,10 @@ class LD2450Sensor:
 
     def get_presence(self) -> Optional[PresenceData]:
         with self._lock:
-            return self._data
+            data = self._data
+        if data is None or time.time() - data.timestamp > _STALE_S:
+            return None
+        return data
 
     def shutdown(self):
         self._running = False
@@ -150,7 +160,9 @@ class LD2450Sensor:
         buf = bytearray()
         while self._running:
             try:
-                chunk = port.read(128) # Larger chunk for 256kbaud
+                # Whatever has arrived (at least 1 byte, or the 1s timeout):
+                # a fixed read(128) waited ~0.4s to fill at the radar's ~10 frames/s.
+                chunk = port.read(port.in_waiting or 1)
                 if chunk:
                     buf.extend(chunk)
                     buf, data = self._parse_buffer(buf)
@@ -167,25 +179,28 @@ class LD2450Sensor:
             pass
 
     def _parse_buffer(self, buf: bytearray):
-        # Look for AA FF 03 00
-        idx = buf.find(FRAME_HEADER)
-        if idx < 0:
-            return buf[-4:], None
+        """Consume every complete frame in `buf`. Returns (unparsed tail, newest
+        PresenceData or None). Parsing only one frame per read let the backlog
+        grow without bound, so the data reported fell further and further behind."""
+        latest = None
+        while True:
+            # Look for AA FF 03 00
+            idx = buf.find(FRAME_HEADER)
+            if idx < 0:
+                # Keep a possible partial header at the end
+                return buf[-(len(FRAME_HEADER) - 1):], latest
+            buf = buf[idx:]
 
-        buf = buf[idx:]
+            if len(buf) < FRAME_LEN:
+                return buf, latest
 
-        # Frame structure: [Header: 4 bytes] [Payload: 24 bytes] [Footer: 2 bytes] = 30 bytes
-        frame_len = 30
-        if len(buf) < frame_len:
-            return buf, None
+            if buf[FRAME_LEN-2:FRAME_LEN] != FRAME_END:
+                # Bad footer, skip header and search again
+                buf = buf[1:]
+                continue
 
-        if buf[frame_len-2:frame_len] != FRAME_END:
-            # Bad footer, skip header and search again
-            return buf[1:], None
-
-        payload = buf[4:28]
-        data = self._parse_payload(payload)
-        return buf[frame_len:], data
+            latest = self._parse_payload(buf[4:FRAME_LEN-2])
+            buf = buf[FRAME_LEN:]
 
     def _parse_payload(self, payload: bytes) -> Optional[PresenceData]:
         targets = []

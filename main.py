@@ -23,6 +23,16 @@
   Headless mode (SSH, no display window):
     python3 main.py --headless
 
+  Output profile (default: config.py display_profile = "auto" — composite
+  when the Pi's composite output is active):
+    python3 main.py --profile composite   # 720x576 analog-VTX layout, 25fps
+
+  Display path (default: config.py display_backend = "auto"):
+    python3 main.py --display gpu      # camera video composited by the GPU
+                                       # (zero-copy, every camera frame), OSD
+                                       # as a separate layer — desktop session
+    python3 main.py --display opencv   # OSD drawn into each frame, cv2 window
+
   Keyboard shortcuts while running:
     Q  — Quit
     S  — Save manual snapshot to output/
@@ -106,6 +116,7 @@ import time
 from config import Config, BASE_DIR
 from pipeline.detection_pipeline import DetectionPipeline
 from display.rescue_display import RescueDisplay
+from display.screen import ScreenBlankingInhibitor, apply_display_profile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -124,18 +135,96 @@ logger = logging.getLogger("main")
 def parse_args():
     p = argparse.ArgumentParser(description="Rescue Drone v3")
     # Wiring LD2450/2410 Radar: TX→RPi RX(GPIO15/Pin10), RX→RPi TX(GPIO14/Pin8), VCC→5V, GND→GND
-    p.add_argument("--mmwave-port", type=str,   default="/dev/ttyAMA0", help="LD2450 UART port")
+    # Value options default to None so config.py stays the single source of
+    # truth — they only override it when actually passed on the command line.
+    p.add_argument("--mmwave-port", type=str,   default=None,           help="LD2450 UART port")
     # Wiring BotWing F722 FC: FC TX→RPi RX (e.g., UART1/2), FC RX→RPi TX, GND→GND
-    p.add_argument("--fc-port",     type=str,   default="/dev/ttyAMA1", help="F722 UART port")
-    p.add_argument("--fc-baud",     type=int,   default=115200,         help="FC baud rate")
+    p.add_argument("--fc-port",     type=str,   default=None,           help="F722 UART port")
+    p.add_argument("--fc-baud",     type=int,   default=None,           help="FC baud rate")
     p.add_argument("--fc-enabled",  action="store_true",                help="Enable FC telemetry")
-    p.add_argument("--yolo-model",  type=str,   default="models/rgb_human.onnx")
-    p.add_argument("--conf",        type=float, default=0.10,           help="YOLO confidence threshold")
+    p.add_argument("--yolo-model",  type=str,   default=None,           help="YOLO .onnx path")
+    p.add_argument("--conf",        type=float, default=None,           help="YOLO confidence threshold")
     p.add_argument("--record",      action="store_true",                help="Save output as video")
     p.add_argument("--headless",    action="store_true",                help="No display window (SSH)")
     p.add_argument("--demo",        action="store_true",                help="Synthetic data — no hardware")
     p.add_argument("--no-fullscreen",action="store_true",               help="Disable fullscreen mode")
+    p.add_argument("--display",     choices=["auto", "gpu", "opencv"], default=None,
+                   help="Display path (default: config.py display_backend)")
+    p.add_argument("--profile",     choices=["auto", "hdmi", "composite"], default=None,
+                   help="Output profile (default: config.py display_profile — "
+                        "composite when the composite output is active)")
     return p.parse_args()
+
+
+def choose_display(cfg, requested) -> str:
+    """'none' (headless), 'gpu' or 'opencv'."""
+    if cfg.headless:
+        return "none"
+    mode = requested or cfg.display_backend
+    if mode == "opencv":
+        return "opencv"
+    if cfg.demo_mode:
+        if mode == "gpu":
+            logger.warning("[MAIN] GPU display needs the real camera — using the OpenCV display in demo mode")
+        return "opencv"
+    from display.gpu_display import available
+    ok, why = available()
+    if ok:
+        return "gpu"
+    if mode == "gpu":
+        logger.warning(f"[MAIN] GPU display unavailable ({why}) — using the OpenCV display")
+    return "opencv"
+
+
+def opencv_loop(pipeline, display, latest, inf_thread, fps):
+    # ── Display loop — at the camera frame rate ───────────────────
+    # On every tick we grab the FRESHEST RGB frame straight from
+    # RGBCamera (already thread-safe) so video plays smoothly even
+    # while the inference thread is mid-YOLO.  Detection overlays
+    # are at most one inference cycle stale but visually fine.
+    target_dt  = 1.0 / fps
+
+    # Periodic perf log — cheap enough to leave on permanently, and
+    # is the actual evidence (not just an assumption) that the
+    # display loop isn't waiting on YOLO/thermal/radar/fusion/tracker.
+    PERF_LOG_INTERVAL_S = 3.0
+    last_perf_log = 0.0
+
+    while inf_thread.is_alive():
+        t0 = time.perf_counter()
+
+        fd = latest()
+
+        if fd is not None:
+            # Always use the freshest camera frame for smooth video
+            fresh_rgb = pipeline.rgb.read()
+            if fresh_rgb is not None:
+                fd = dataclasses.replace(fd, rgb_frame=fresh_rgb)
+
+            display.render(fd)
+            if display.should_quit():
+                break
+
+            now = time.time()
+            if now - last_perf_log >= PERF_LOG_INTERVAL_S:
+                last_perf_log = now
+                cam_ts   = pipeline.rgb.capture_ts
+                tm       = fd.timing_ms
+                logger.info(
+                    "[PERF] camera=%.1ffps display=%.1ffps inference=%.1ffps | "
+                    "yolo=%.0fms sensors=%.0fms fusion=%.0fms tracker=%.0fms | "
+                    "video_frame_age=%.0fms detection_age=%.0fms | blocked_on_ml=NO",
+                    pipeline.rgb.fps, display.video_fps, fd.fps,
+                    tm.get("yolo_ms", 0.0), tm.get("sensors_ms", 0.0),
+                    tm.get("fusion_ms", 0.0), tm.get("tracker_ms", 0.0),
+                    (now - cam_ts) * 1000 if cam_ts else 0.0,
+                    (now - fd.timestamp) * 1000,
+                )
+
+        elapsed  = time.perf_counter() - t0
+        sleep_t  = target_dt - elapsed
+        if sleep_t > 0:
+            time.sleep(sleep_t)
 
 
 def main():
@@ -145,111 +234,109 @@ def main():
     logger.info("  BotWing F722 | MLX90640 | Pi Cam 3 | HLK-LD2450")
     logger.info("=" * 60)
 
+    overrides = {
+        "ld2410_port":         args.mmwave_port,
+        "fc_port":             args.fc_port,
+        "fc_baud":             args.fc_baud,
+        "yolo_model_path":     args.yolo_model,
+        "yolo_conf_threshold": args.conf,
+    }
     cfg = Config(
-        ld2410_port=args.mmwave_port,
-        fc_port=args.fc_port,
-        fc_baud=args.fc_baud,
         fc_enabled=args.fc_enabled,
-        yolo_model_path=args.yolo_model,
-        yolo_conf_threshold=args.conf,
         record=args.record,
         headless=args.headless,
         demo_mode=args.demo,
+        **{k: v for k, v in overrides.items() if v is not None},
     )
     if args.no_fullscreen:
         cfg.fullscreen = False
+    if not cfg.headless:
+        profile = apply_display_profile(cfg, args.profile)
+        logger.info(f"[MAIN] Output profile: {profile} ({cfg.display_width}x{cfg.display_height} "
+                    f"@ {cfg.rgb_fps}fps, OSD style {cfg.osd_style})")
+
+    mode = choose_display(cfg, args.display)
+    if mode == "gpu":
+        # Display process (camera + GPU video) with the sensors/ML/OSD in a
+        # worker process — see display/gpu_display.py for why.
+        from display.gpu_display import run_gpu, GpuDisplayUnavailable
+        logger.info("[MAIN] Display: gpu")
+        try:
+            rc = run_gpu(cfg)
+            logger.info("Shut down cleanly." if rc == 0 else f"Shut down — worker exit code {rc}.")
+            return rc
+        except GpuDisplayUnavailable as e:
+            logger.warning(f"[MAIN] GPU display failed to start ({e}) — using the OpenCV display")
+            mode = "opencv"
+    logger.info(f"[MAIN] Display: {mode}")
 
     pipeline = DetectionPipeline(cfg)
-    display  = RescueDisplay(cfg) if not cfg.headless else None
+    display  = RescueDisplay(cfg) if mode == "opencv" else None
+    screen   = ScreenBlankingInhibitor()
+    inf_thread = None
+    # Non-zero on a fatal error so systemd's Restart=on-failure restarts us.
+    rc = 0
 
     try:
         logger.info("Initializing all systems...")
         pipeline.initialize()
         logger.info("Ready. Q=quit  S=snapshot")
 
-        if cfg.headless:
+        if mode == "none":
             # ── Headless: synchronous pipeline loop ──────────────
             for fd in pipeline.run():
                 pass
 
         else:
-            # ── Inference thread (thermal-gated, ~4 fps) ─────────
+            # An idle desktop blanks the screen after 10 min — black goggles mid-flight.
+            screen.start()
+
+            # ── Inference thread (thermal-gated, ~1-2 fps) ───────
             # Runs YOLO / anomaly / fusion / tracking in the background.
-            _state: dict = {"fd": None}
+            _state: dict = {"fd": None, "failed": False}
             _lock = threading.Lock()
 
             def _inference_loop():
-                for fd in pipeline.run():
-                    with _lock:
-                        _state["fd"] = fd
+                try:
+                    for fd in pipeline.run():
+                        with _lock:
+                            _state["fd"] = fd
+                except Exception:
+                    logger.exception("[MAIN] Inference thread failed")
+                    _state["failed"] = True
+
+            def latest():
+                with _lock:
+                    return _state["fd"]
 
             inf_thread = threading.Thread(
                 target=_inference_loop, daemon=True, name="inference"
             )
             inf_thread.start()
 
-            # ── Display loop — up to 30 fps ───────────────────────
-            # On every tick we grab the FRESHEST RGB frame straight from
-            # RGBCamera (already thread-safe) so video plays smoothly even
-            # while the inference thread is mid-YOLO.  Detection overlays
-            # are at most one inference cycle stale but visually fine.
-            TARGET_FPS = 30
-            target_dt  = 1.0 / TARGET_FPS
-
-            # Periodic perf log — cheap enough to leave on permanently, and
-            # is the actual evidence (not just an assumption) that the
-            # display loop isn't waiting on YOLO/thermal/radar/fusion/tracker.
-            PERF_LOG_INTERVAL_S = 3.0
-            last_perf_log = 0.0
-
-            while inf_thread.is_alive():
-                t0 = time.perf_counter()
-
-                with _lock:
-                    fd = _state["fd"]
-
-                if fd is not None:
-                    # Always use the freshest camera frame for smooth video
-                    fresh_rgb = pipeline.rgb.read()
-                    if fresh_rgb is not None:
-                        fd = dataclasses.replace(fd, rgb_frame=fresh_rgb)
-
-                    display.render(fd)
-                    if display.should_quit():
-                        break
-
-                    now = time.time()
-                    if now - last_perf_log >= PERF_LOG_INTERVAL_S:
-                        last_perf_log = now
-                        cam_ts   = pipeline.rgb.capture_ts
-                        tm       = fd.timing_ms
-                        logger.info(
-                            "[PERF] camera=%.1ffps display=%.1ffps inference=%.1ffps | "
-                            "yolo=%.0fms sensors=%.0fms fusion=%.0fms tracker=%.0fms | "
-                            "video_frame_age=%.0fms detection_age=%.0fms | blocked_on_ml=NO",
-                            pipeline.rgb.fps, display.video_fps, fd.fps,
-                            tm.get("yolo_ms", 0.0), tm.get("sensors_ms", 0.0),
-                            tm.get("fusion_ms", 0.0), tm.get("tracker_ms", 0.0),
-                            (now - cam_ts) * 1000 if cam_ts else 0.0,
-                            (now - fd.timestamp) * 1000,
-                        )
-
-                elapsed  = time.perf_counter() - t0
-                sleep_t  = target_dt - elapsed
-                if sleep_t > 0:
-                    time.sleep(sleep_t)
+            opencv_loop(pipeline, display, latest, inf_thread, cfg.rgb_fps)
+            if _state["failed"]:
+                rc = 1
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     except Exception as e:
         logger.exception(f"Fatal: {e}")
+        rc = 1
     finally:
+        # Stop and join the inference thread BEFORE tearing anything down —
+        # exiting while YOLO is mid-inference aborts the process.
+        pipeline.stop()
+        if inf_thread is not None:
+            inf_thread.join(timeout=5.0)
         pipeline.shutdown()
         if display:
             display.close()
-        logger.info("Shut down cleanly.")
+        screen.restore()
+        logger.info("Shut down cleanly." if rc == 0 else "Shut down after a fatal error.")
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
 

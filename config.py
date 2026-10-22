@@ -45,7 +45,7 @@ class Config:
     # Wiring: TX→RPi RX(GPIO15/Pin10), RX→RPi TX(GPIO14/Pin8), VCC→5V, GND→GND
     ld2410_port: str = "/dev/ttyAMA0"   # RPi UART0 (disable BT first)
     ld2410_baud: int = 256000           # LD2410C default baud
-    ld2410_max_range_cm: int = 600      # configure per environment (max 600cm)
+    ld2410_max_range_cm: int = 800      # LD2450 max tracking range is 8m (radar scope scale)
 
     # ── BotWing F722 Flight Controller (MAVLink) ──────────────────
     # Sends detection alerts to FC → triggers LED/buzzer on drone
@@ -64,8 +64,15 @@ class Config:
     # CPU for that ~200ms window, which shows up as video stutter in sync
     # with inference even though the threads are architecturally decoupled.
     # Leave at least one core free for everything else.
-    yolo_intra_threads: int = 2
-    yolo_conf_threshold: float = 0.10   # Dropped drastically to allow partial face detection
+    # Measured on the Pi 4 with the full pipeline running: detection rate is
+    # set by the ~0.5s MLX90640 read, not YOLO — 1 thread gave the same
+    # 1.06 inference fps as 2 threads (1.08) while the 30fps display loop
+    # went from 19.4fps to 23.1fps (worst frame gap 299ms -> 140ms).
+    yolo_intra_threads: int = 1
+    # Highest-scoring spurious detection over 548 VisDrone frames was 0.32;
+    # clearly visible people score 0.5-0.7. 0.35 rejects every observed
+    # false positive without losing any of those true detections.
+    yolo_conf_threshold: float = 0.35
     yolo_iou_threshold: float = 0.45
     yolo_every_n_frames: int = 1        # run every frame for maximum responsiveness
     # Preprocessing must match how rgb_human.onnx was actually trained/exported.
@@ -76,6 +83,11 @@ class Config:
     # 16:9 camera feed) under letterbox mode; that symptom matches a model
     # trained with a plain resize instead of letterboxing.
     yolo_letterbox: bool = True
+    # Use <model>_int8.onnx (made by tools/quantize_yolo.py) when it exists and
+    # is not older than the float model: 251ms vs 292ms per frame on the Pi 4
+    # with the same accuracy (coco128 held-out people). Older = stale after a
+    # retrain, so the float model is used instead (with a warning).
+    yolo_int8: bool = True
 
     # ── ML: Anomaly Detector ─────────────────────────────────────
     anomaly_enabled: bool = True
@@ -89,7 +101,10 @@ class Config:
     fusion_iou_merge: float = 0.30
 
     # ── SORT Tracker ─────────────────────────────────────────────
-    tracker_max_age: int = 12           # frames (3s at 4fps)
+    # Inference is gated by the MLX90640 (one frame per ~520ms at REFRESH_4_HZ),
+    # so the pipeline runs at ~1.9 cycles/s, not 4 — ages are counted in cycles.
+    # 6 cycles ≈ 3s before a lost track's box disappears.
+    tracker_max_age: int = 6
     tracker_min_hits: int = 1
     tracker_iou_thresh: float = 0.25
 
@@ -97,10 +112,28 @@ class Config:
     # Outputting to an analog VTX uses the Pi 4's composite 3.5mm TRRS jack or test pads.
     # Wiring (TRRS Jack): Tip=Audio L, Ring1=Audio R, Ring2=GND, Sleeve=Composite Video.
     # Connect Sleeve to VTX Video-IN, and Ring2 to VTX GND.
-    # Require '/boot/firmware/config.txt' set 'enable_tvout=1' and 'sdtv_mode=2' (if PAL) or 0 (if NTSC).
+    # Enable with 'dtoverlay=vc4-kms-v3d,composite' in /boot/firmware/config.txt (turns HDMI off
+    # on a Pi 4) and 'vc4.tv_norm=PAL' or NTSC in cmdline.txt. ('enable_tvout' / 'sdtv_mode' are
+    # legacy-firmware settings and have no effect under the KMS driver.)
     display_width: int = 1280
     display_height: int = 720
     fullscreen: bool = True             # Maximize window for composite VTX output
+    # "auto": "composite" when the Pi's composite output is active, else "hdmi".
+    # "composite" (display/screen.py apply_display_profile) switches to the
+    # output's own resolution (720x576 PAL / 720x480 NTSC), 4:3 camera streams
+    # (the camera's 16:9 picture is centre-cropped, which also gives PAL's
+    # pixel shape exactly), the output's frame rate and the composite OSD style.
+    display_profile: str = "auto"
+    osd_style: str = "hdmi"             # set by the display profile
+    # "gpu": camera video composited by the GPU straight from the camera's
+    #        buffers (every camera frame, zero-copy), OSD as a separate layer —
+    #        needs a desktop (X11) session. Measured fullscreen on 1080p HDMI
+    #        with the full ML pipeline: 30.0fps with 0 frames skipped and ~3
+    #        gaps >50ms per 30s at 43% total CPU, vs "opencv" 27fps with ~63
+    #        gaps >50ms at 64% CPU.
+    # "opencv": OSD drawn into each frame and shown in a cv2 window.
+    # "auto": gpu when available, otherwise opencv (always opencv in demo mode).
+    display_backend: str = "auto"
     headless: bool = False
     record: bool = False
     output_video: str = str(BASE_DIR / "output" / "recording.mp4")

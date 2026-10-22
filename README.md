@@ -119,11 +119,11 @@ The Pi 4's 3.5mm TRRS jack carries a composite video signal. Wire it to your VTX
 * **Ring 2**: GND `➔ VTX Ground`
 * **Sleeve**: Video `➔ VTX Video-IN`
 
-> **Important:** The Pi 4 turns composite output off by default. Add these two lines to `/boot/firmware/config.txt` to enable it:
+> **Important:** The Pi 4 turns composite output off by default. With the KMS display driver (the default on current Raspberry Pi OS) enable it in `/boot/firmware/config.txt`:
 > ```
-> enable_tvout=1
-> sdtv_mode=2   # PAL — switch to 0 for NTSC regions
+> dtoverlay=vc4-kms-v3d,composite
 > ```
+> and choose the TV standard by adding `vc4.tv_norm=PAL` (or `NTSC`) to `/boot/firmware/cmdline.txt`. On a Pi 4 this turns HDMI off. (`enable_tvout` / `sdtv_mode` only apply to the old firmware display driver and do nothing under KMS.)
 
 ### 2. MLX90640 Thermal Sensor (I2C)
 
@@ -145,7 +145,7 @@ The thermal array is the heart of the survivor detection pipeline. It connects o
 * **VCC** `➔` Pin 2  (5V)
 * **GND** `➔` Pin 14 (GND)
 
-> You'll need to disable onboard Bluetooth to free up UART0. Worth it — the radar adds a whole extra dimension to detection confidence.
+> You'll need to disable onboard Bluetooth (`dtoverlay=disable-bt`) to free up UART0, and remove `console=serial0,115200` from `/boot/firmware/cmdline.txt` so Linux doesn't use the port as a login console. Worth it — the radar adds a whole extra dimension to detection confidence.
 
 ### 4. BotWing F722 Flight Controller (UART1 or UART2)
 
@@ -153,7 +153,7 @@ The thermal array is the heart of the survivor detection pipeline. It connects o
 * **F722 RX** `➔` RPi TX (GPIO 0 / Pin 27 for UART2)
 * **GND** `➔` Shared GND
 
-> In iNav, head to the Ports tab and enable MSP on this UART at 115200 baud.
+> In iNav, head to the Ports tab and set Telemetry to **MAVLink** on this UART at 115200 baud. (The Pi only listens over MAVLink; it never sends commands.)
 
 ### 5. Pi Camera Module 3 (CSI)
 

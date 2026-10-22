@@ -15,6 +15,7 @@ Optimizations applied per requirement:
 """
 
 import logging
+import os
 import numpy as np
 import cv2
 from pathlib import Path
@@ -23,6 +24,12 @@ from typing import List, Tuple, Optional, Set
 from ml.detection import Detection
 
 logger = logging.getLogger("ml")
+
+# onnxruntime (1.30) records usage telemetry in ~/.cache/Microsoft and, at
+# process exit, blocks ~15s trying to upload it — long enough that the GPU
+# display's worker process missed its stop deadline and was killed. Must be set
+# before onnxruntime is imported (YOLODetector.load() and its import check).
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
 
 # Pre-allocated morphology kernels — created once at import, reused every frame
 _K3  = np.ones((3,  3),  np.uint8)
@@ -290,18 +297,19 @@ class YOLODetector:
                     return self._try_cv2_fallback(path)
 
                 import onnxruntime as ort
+                onnx_path = self._int8_or(path)
                 opts = ort.SessionOptions()
                 # Deliberately NOT using all CPU cores here — see cfg.yolo_intra_threads
                 # in config.py for why (starves camera/display/sensor threads on a Pi4).
                 opts.intra_op_num_threads = self.cfg.yolo_intra_threads
                 opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
                 self._model = ort.InferenceSession(
-                    str(path), sess_options=opts,
+                    str(onnx_path), sess_options=opts,
                     providers=["CPUExecutionProvider"],
                 )
                 self._input_name = self._model.get_inputs()[0].name
                 self._backend    = "onnx"
-                logger.info(f"[YOLO] ONNX loaded: {path} | {self.cfg.yolo_intra_threads}-thread | {self.cfg.yolo_input_size}px")
+                logger.info(f"[YOLO] ONNX loaded: {onnx_path} | {self.cfg.yolo_intra_threads}-thread | {self.cfg.yolo_input_size}px")
                 return True
             except Exception as e:
                 logger.warning(f"[YOLO] ONNX failed: {e}")
@@ -312,6 +320,19 @@ class YOLODetector:
         )
         return False
         
+    def _int8_or(self, path: Path) -> Path:
+        """<model>_int8.onnx (tools/quantize_yolo.py) when cfg.yolo_int8 is set
+        and that file is at least as new as the float model — after a retrain
+        an old int8 file would silently run the previous model."""
+        q = path.with_name(path.stem + "_int8.onnx")
+        if not getattr(self.cfg, "yolo_int8", False) or not q.exists():
+            return path
+        if q.stat().st_mtime < path.stat().st_mtime:
+            logger.warning(f"[YOLO] {q.name} is older than {path.name} — using the float model. "
+                           f"Re-run tools/quantize_yolo.py after retraining.")
+            return path
+        return q
+
     def _try_cv2_fallback(self, path) -> bool:
         logger.info("[YOLO] Attempting failover to OpenCV DNN Pipeline...")
         try:
@@ -328,15 +349,11 @@ class YOLODetector:
         self._counter += 1
         return self._counter % self.cfg.yolo_every_n_frames == 0
 
-    def detect(self, visual: np.ndarray, out_w: Optional[int] = None, out_h: Optional[int] = None) -> List[Detection]:
-        if self._backend == "none" or visual is None:
-            return []
-        sz     = self.cfg.yolo_input_size
-        VH, VW = visual.shape[:2]
-        
-        if out_w is None: out_w = VW
-        if out_h is None: out_h = VH
-
+    def letterbox(self, visual: np.ndarray):
+        """Resize / pad a BGR frame to the model input exactly as detect() does.
+        Returns (RGB uint8 image, rx, ry, dw, dh) — the scale factors and
+        padding map model coordinates back to the frame."""
+        sz    = self.cfg.yolo_input_size
         shape = visual.shape[:2]  # H, W
 
         if getattr(self.cfg, "yolo_letterbox", True):
@@ -372,6 +389,24 @@ class YOLODetector:
         # YOLO ONNX expects RGB colors for proper skin tracking; OpenCV gives us BGR.
         if len(resized.shape) == 3 and resized.shape[2] == 3:
             resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        return resized, rx, ry, dw, dh
+
+    def blob(self, visual: np.ndarray) -> np.ndarray:
+        """The (1, 3, sz, sz) float32 tensor detect() feeds the ONNX model for
+        a BGR frame — e.g. for quantization calibration (tools/quantize_yolo.py)."""
+        img = self.letterbox(visual)[0]
+        return np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))[None]
+
+    def detect(self, visual: np.ndarray, out_w: Optional[int] = None, out_h: Optional[int] = None) -> List[Detection]:
+        if self._backend == "none" or visual is None:
+            return []
+        sz     = self.cfg.yolo_input_size
+        VH, VW = visual.shape[:2]
+
+        if out_w is None: out_w = VW
+        if out_h is None: out_h = VH
+
+        resized, rx, ry, dw, dh = self.letterbox(visual)
 
         if self._backend == "onnx":
             # Write into pre-allocated buffer in-place
@@ -380,7 +415,7 @@ class YOLODetector:
                 np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1)),
             )
             out = self._model.run(None, {self._input_name: self._inp})[0]
-        elif self._backend == "cv2":
+        else:   # "cv2"
             blob = cv2.dnn.blobFromImage(resized, 1/255.0, (sz, sz), swapRB=False, crop=False)
             self._model.setInput(blob)
             out = self._model.forward()

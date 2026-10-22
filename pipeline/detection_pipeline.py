@@ -1,15 +1,18 @@
 """
 Detection Pipeline v3 — Cascade for RPi4 + MLX90640 + LD2410C-P
 
-Frame budget @ 4fps = 250ms:
-  Sensor read          ~15ms
-  Anomaly detector     ~15ms   (every frame)
-  YOLOv8n ONNX        ~200ms  (every 3rd frame → ~67ms amortized)
-  Fusion + track       ~10ms
-  Total               ~107ms  ✓ fits budget
+One detection cycle per MLX90640 frame. Measured on the Pi 4 (100 kHz I2C):
+  MLX90640 frame      ~520ms   own thread, back-to-back — 85% of it is waiting
+                               on I2C, so it overlaps everything below
+  YOLOv8n ONNX        ~300ms
+  Anomaly + fusion + tracking ~5ms
+  → ~1.9 cycles/s, set by the sensor (2 frames/s at its 4 Hz subpage rate).
+    Reading the sensor inline after YOLO gave 1.0/s: the read also waited out
+    a random part of the sensor's cycle (~725ms per read).
 """
 
 import logging
+import threading
 import time
 import numpy as np
 from dataclasses import dataclass, field
@@ -61,10 +64,12 @@ class FrameData:
 
 
 class DetectionPipeline:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, rgb=None):
         self.cfg = cfg
         self.thermal  = ThermalCamera(cfg)
-        self.rgb      = RGBCamera(cfg)
+        # `rgb` lets another component own the camera and feed frames in —
+        # the GPU display does, since it needs the camera for zero-copy video.
+        self.rgb      = rgb if rgb is not None else RGBCamera(cfg)
         self.radar    = LD2450Sensor(cfg)
         self.fc       = FlightController(cfg)
         self.anomaly  = AnomalyDetector(cfg)
@@ -77,13 +82,26 @@ class DetectionPipeline:
         self._last_yolo_dets: List[Detection] = []
         self._total_unique: int = 0
         # FIX: cache the last good RGB frame so the display never goes
-        # black during the camera warmup period (_WARMUP_FRAMES) or during
+        # black during the camera warmup period or during
         # a watchdog restart. Without this, every frame where rgb.read()
         # returns None renders a solid black pane.
         self._last_rgb: Optional[np.ndarray] = None
+        self._stop = threading.Event()
+        self._last_thermal_ok = time.monotonic()
+        self._last_thermal_warn = 0.0
+        self._last_yield: Optional[float] = None
+        # Newest (raw, visual, read_ms) from the thermal thread; None once consumed.
+        self._thermal_cv = threading.Condition()
+        self._thermal_frame: Optional[tuple] = None
+        self._thermal_thread: Optional[threading.Thread] = None
 
     def initialize(self):
         ok_t = self.thermal.initialize()
+        if self.thermal.is_online:
+            self._thermal_thread = threading.Thread(
+                target=self._thermal_loop, daemon=True, name="thermal"
+            )
+            self._thermal_thread.start()
         self.rgb.initialize()
         self.radar.initialize()
         self.fc.initialize()
@@ -98,49 +116,77 @@ class DetectionPipeline:
             f"  Thermal  : {'online' if self.thermal.is_online else 'OFFLINE'}\n"
             f"  RGB      : {'online' if self.rgb.is_online else 'OFFLINE'}\n"
             f"  LD2410   : {'online' if self.radar.is_online else 'OFFLINE'}\n"
-            f"  FC       : {'online' if self.fc.is_online else 'disabled'}\n"
+            f"  FC       : {'online' if self.fc.is_online else ('OFFLINE' if self.cfg.fc_enabled else 'disabled')}\n"
             f"  YOLO     : {self.yolo.backend}"
         )
 
     def shutdown(self):
+        # The thermal thread owns the sensor — let it finish its read first.
+        self._stop.set()
+        if self._thermal_thread is not None:
+            self._thermal_thread.join(timeout=2.0)
         self.thermal.release()
         self.rgb.release()
         self.radar.shutdown()
         self.fc.shutdown()
         logger.info("[PIPELINE] All sensors shut down")
 
-    def run(self) -> Iterator[FrameData]:
-        while True:
-            t0 = time.perf_counter()
-            timing = {}
+    def stop(self):
+        """Make run() return after its current cycle. Callers should then join
+        the thread iterating run() before shutdown(): letting the interpreter
+        exit while YOLO is mid-inference aborts the process (onnxruntime
+        "terminate called without an active exception")."""
+        self._stop.set()
 
-            # 1. Read thermal first — it's the gate. At ~4.3fps sensor rate
-            # but a 25Hz poll loop, most iterations hit the "not ready yet"
-            # branch below and get discarded; reading RGB/radar (a real
-            # frame .copy(), not free) before knowing that wasted a copy on
-            # every one of those throwaway iterations. Only read them once
-            # we know this cycle will actually be used.
+    def _thermal_loop(self):
+        """Reads the MLX90640 back-to-back on its own thread. This thread is the
+        only one touching the sensor (Blinka's I2C is not thread-safe), and
+        reading continuously keeps getFrame() in step with the sensor's
+        subpages, while YOLO runs on the pipeline thread in parallel."""
+        # Synthetic frames are instant — pace them like the real sensor.
+        pace = 1.0 / max(1, self.cfg.thermal_fps) if self.cfg.demo_mode else 0.0
+        while not self._stop.is_set():
             t = time.perf_counter()
             raw, visual = self.thermal.read()
-            timing["thermal_ms"] = (time.perf_counter() - t) * 1000
-
-            # thermal.read() returns (None, None) both when rate-limited (normal,
-            # between 250ms refresh cycles) and on actual I2C errors.
-            # Only warn + skip if we've had no frame for 3+ seconds.
-            if visual is None and not self.cfg.demo_mode:
-                if not hasattr(self, "_last_thermal_ok"):
-                    self._last_thermal_ok = time.monotonic()
-                if time.monotonic() - self._last_thermal_ok > 3.0:
-                    logger.warning("[PIPELINE] No thermal frame for 3s — check I2C / sensor")
-                time.sleep(0.04)   # yield CPU; next getFrame() won't be ready anyway
+            if visual is None:
+                # Rate-limited or an I2C error (ThermalCamera backs off itself).
+                time.sleep(0.02)
                 continue
-            else:
-                self._last_thermal_ok = time.monotonic()
+            with self._thermal_cv:
+                self._thermal_frame = (raw, visual, (time.perf_counter() - t) * 1000)
+                self._thermal_cv.notify()
+            if pace:
+                time.sleep(max(0.0, pace - (time.perf_counter() - t)))
+
+    def run(self) -> Iterator[FrameData]:
+        while not self._stop.is_set():
+            # 1. Wait for the next thermal frame — it's the gate for one cycle.
+            # RGB/radar are only read once we know this cycle will be used.
+            with self._thermal_cv:
+                if self._thermal_frame is None:
+                    self._thermal_cv.wait(timeout=0.25)
+                frame, self._thermal_frame = self._thermal_frame, None
+            if frame is None:
+                # Only warn if we've had no frame for 3+ seconds.
+                now = time.monotonic()
+                # Warn every 5s while it lasts — not on every poll.
+                if now - self._last_thermal_ok > 3.0 and now - self._last_thermal_warn > 5.0:
+                    self._last_thermal_warn = now
+                    logger.warning(
+                        f"[PIPELINE] No thermal frame for {now - self._last_thermal_ok:.0f}s — check I2C / sensor"
+                    )
+                continue
+            self._last_thermal_ok = time.monotonic()
+
+            t0 = time.perf_counter()
+            raw, visual, thermal_ms = frame
+            # Time the read took on the thermal thread (overlaps this cycle).
+            timing = {"thermal_ms": thermal_ms}
 
             t = time.perf_counter()
             rgb_new = self.rgb.read()
             # FIX: cache last good RGB frame — prevents black pane during
-            # camera warmup (_WARMUP_FRAMES) and watchdog restart gaps.
+            # camera warmup and watchdog restart gaps.
             if rgb_new is not None:
                 self._last_rgb = rgb_new
             rgb = self._last_rgb
@@ -221,6 +267,13 @@ class DetectionPipeline:
         # FC is read-only — no data is transmitted back to the flight controller
 
     def _fps(self, elapsed: float) -> float:
+        # Rate of delivered results: wall-clock time between them, including
+        # the polls spent waiting for the thermal sensor (which `elapsed`,
+        # this cycle's processing time, leaves out).
+        now = time.perf_counter()
+        if self._last_yield is not None:
+            elapsed = now - self._last_yield
+        self._last_yield = now
         self._fps_buf.append(elapsed)
         if len(self._fps_buf) > 20: self._fps_buf.pop(0)
         avg = sum(self._fps_buf) / len(self._fps_buf)

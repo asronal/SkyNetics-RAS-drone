@@ -57,3 +57,5 @@ models/*_int8.onnx
 docs/
 CLAUDE.md
 .remember/
+Q&A.md
+code_structure_reference.txt

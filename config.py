@@ -5,6 +5,7 @@ Hardware: BotWing F722 | MLX90640 | RPi Cam Module 3 | HLK-LD2410C-P
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Tuple, Union
 
 # Anchor every relative output path (logs, snapshots, models, config) to
 # THIS file's own directory instead of the process's current working
@@ -22,10 +23,18 @@ class Config:
     # ── MLX90640 Thermal Camera (I2C) ─────────────────────────────
     # 32×24 pixels, 55° FOV, I2C address 0x33
     # Wiring: SDA→Pin3, SCL→Pin5, VCC→3.3V(Pin1), GND→Pin6
-    thermal_fps: int = 4
+    # Sensor refresh rate in Hz (1/2/4/8/16; a full frame = 2 subpages, so 4 Hz
+    # gives ~2 frames/s). 8 Hz needs dtparam=i2c_arm_baudrate=400000 in
+    # config.txt: at the default 100 kHz every 8 Hz read fails. At 400 kHz, 8 Hz vs 4 Hz
+    # (2026-10-30): 3.9 vs 2.0 frames/s, 0 errors, pixel noise 0.18 vs 0.13 C, whole app
+    # 40% vs 37% CPU — headroom left for AnyDesk / the network.
+    thermal_fps: int = 8
     thermal_min_temp: float = -20.0   # °C cold snow background
     thermal_max_temp: float = 40.0    # °C human body ~37°C
     thermal_colormap: str = "inferno"
+    # Remove the MLX90640's subpage checkerboard and frame-to-frame level flicker
+    # (sensors/thermal_camera.py _denoise). Absolute °C stay as the sensor reports.
+    thermal_denoise: bool = True
 
     # ── RPi Camera Module 3 (CSI / libcamera) ─────────────────────
     # Sony IMX708, 12MP — captured at 640×360 for display
@@ -37,6 +46,10 @@ class Config:
     rgb_width: int = 640
     rgb_height: int = 360
     rgb_fps: int = 30
+    # Continuous autofocus (PDAF). False = fixed focus at ~2 m (sensors/rgb_camera.py
+    # _LENS_POSITION) with the AF algorithm disabled. PDAF needs a healthy camera ribbon:
+    # a damaged one corrupts the focus data ("PDAF data in unsupported format").
+    camera_autofocus: bool = True
 
     # ── HLK-LD2410C-P Presence Radar (UART) ──────────────────────
     # 24GHz FMCW — detects moving + stationary targets
@@ -56,9 +69,13 @@ class Config:
     fc_baud: int = 115200              # INAV MAVLink default baud
     fc_heartbeat_interval_sec: float = 5.0  # reconnect retry interval on UART error
 
-    # ── ML: YOLOv8n ONNX ─────────────────────────────────────────
+    # ── ML: YOLO11n ONNX (aerial person detector, 2026-10-24) ─────
+    # Trained on VisDrone + HERIDAL + COCO (model_handoff/Handoff_results.md).
+    # Previous YOLOv8n@320 model kept as models/rgb_human_fp32_old.onnx.
     yolo_model_path: str = str(BASE_DIR / "models" / "rgb_human.onnx")
-    yolo_input_size: int = 320          # Must match the locked ONNX export shape (320x320)
+    # int = square, or (width, height) for a rectangular export, e.g. (512, 288).
+    # The ONNX file's own input shape overrides this when they differ.
+    yolo_input_size: Union[int, Tuple[int, int]] = 416
     # RPi4 has 4 cores total. Letting ONNX Runtime's thread pool claim all 4
     # during every YOLO call starves the camera/display/sensor threads of
     # CPU for that ~200ms window, which shows up as video stutter in sync
@@ -69,12 +86,17 @@ class Config:
     # 1.06 inference fps as 2 threads (1.08) while the 30fps display loop
     # went from 19.4fps to 23.1fps (worst frame gap 299ms -> 140ms).
     yolo_intra_threads: int = 1
-    # Highest-scoring spurious detection over 548 VisDrone frames was 0.32;
-    # clearly visible people score 0.5-0.7. 0.35 rejects every observed
-    # false positive without losing any of those true detections.
-    yolo_conf_threshold: float = 0.35
+    # 0.35 was chosen for the old model (its top false positive on VisDrone
+    # scored 0.32). The aerial model at 0.25: +22% aerial recall (VisDrone
+    # R 0.319 / P 0.661), dark-frame false alarms unchanged (1 in 300 frames),
+    # F1 within 0.01 of its best. Lower than 0.20 doubles false positives.
+    yolo_conf_threshold: float = 0.25
     yolo_iou_threshold: float = 0.45
-    yolo_every_n_frames: int = 1        # run every frame for maximum responsiveness
+    # YOLO about once a second, whatever the thermal rate. The 416 px model (~358 ms
+    # int8) on every cycle (~1.9/s) gave 45-57 display gaps >50 ms per 30 s and +6 ms
+    # latency; ~1/s gives 7 gaps, 0 skipped frames (bench_gpu, 2026-10-24) and
+    # leaves CPU for AnyDesk / the network.
+    yolo_interval_s: float = 1.0
     # Preprocessing must match how rgb_human.onnx was actually trained/exported.
     # True (default) = letterbox (pad to preserve aspect ratio) — correct if
     # trained via the standard Ultralytics dataloader.

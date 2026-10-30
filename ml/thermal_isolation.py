@@ -226,24 +226,11 @@ class ThermalIsolator:
           - Background: darkened (dim non-human regions)
           - Human blobs: brightened + orange-white glow overlay
         """
-        out = visual.copy()
-
-        # Dim the background (non-human regions)
-        bg_mask = cv2.bitwise_not(mask_up)
-        bg_region = cv2.bitwise_and(out, out, mask=bg_mask)
-        # Darken background by 50%
-        bg_dark = (bg_region * 0.45).astype(np.uint8)
-        np.copyto(out, bg_dark, where=bg_mask[:,:,np.newaxis].astype(bool))
-
-        # Human region: boost brightness + add warm glow
-        human_region = cv2.bitwise_and(out, out, mask=mask_up)
-        # Add orange-white warmth to the human blob
-        warm_overlay = np.zeros_like(out)
-        warm_overlay[:, :] = (20, 60, 30)   # BGR: slight orange boost
-        warm_add = cv2.bitwise_and(warm_overlay, warm_overlay, mask=mask_up)
-        human_boosted = cv2.add(human_region, warm_add)
-        np.copyto(out, human_boosted, where=mask_up[:,:,np.newaxis].astype(bool))
-
+        # Background darkened to 45%, then the human blobs overwritten with the
+        # original plus a slight orange boost (BGR, saturating). Two cv2 calls:
+        # the numpy masking version took ~120 ms per 1280x720 frame on the Pi.
+        out = cv2.convertScaleAbs(visual, alpha=0.45)
+        cv2.add(visual, (20, 60, 30, 0), dst=out, mask=mask_up)
         return out
 
     def _render_silhouette(self, mask_up: np.ndarray) -> np.ndarray:

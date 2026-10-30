@@ -354,6 +354,7 @@ class OSDRenderer:
         H:        int,
         dets:     List[Detection],
         num_humans:      int    = 0,
+        num_heat:        int    = 0,
         total_unique:    int    = 0,
         radar_present:   bool   = False,
         radar_state:     int    = 0,
@@ -403,9 +404,11 @@ class OSDRenderer:
         dl.line((cx, cy + a0), (cx, cy + a1), OSD_WHITE, 2)
         dl.circle((cx, cy), 3, OSD_WHITE, s.line)
 
-        box_col = OSD_ORANGE[::-1]   # cv2 takes BGR; the OSD_* colours are RGB (text sprites)
+        # cv2 takes BGR; the OSD_* colours are RGB (text sprites)
+        human_col, heat_col = OSD_ORANGE[::-1], OSD_CYAN[::-1]
         L = 24 if comp else 20
         for det in dets:
+            box_col = heat_col if det.heat_only else human_col
             x1 = int(det.x1); y1 = int(det.y1)
             x2 = int(det.x2); y2 = int(det.y2)
             dl.line((x1, y1),   (x1+L, y1),   box_col, s.line)
@@ -487,8 +490,8 @@ class OSDRenderer:
         if num_humans > 0:
             alert_text = "HUMAN DETECTED!"
             col = OSD_ORANGE
-        elif anomaly_triggered:
-            alert_text = "POSSIBLE HUMAN (THERMAL)"
+        elif num_heat > 0 or anomaly_triggered:
+            alert_text = "HEAT SIGNATURE"
             col = OSD_CYAN
         else:
             alert_text = "RESCUE DRONE OSD"
@@ -516,7 +519,7 @@ class OSDRenderer:
         for det in dets:
             x1 = int(det.x1); y1 = int(det.y1); x2 = int(det.x2)
             cx_b  = (x1 + x2) // 2
-            label = "HUMAN"
+            label, col = ("HEAT", OSD_CYAN) if det.heat_only else ("HUMAN", OSD_ORANGE)
             lw    = _text_w(label, s.f_sm)
-            txt(label, (cx_b - lw // 2, y1 - (row - 2 if comp else 20)), s.f_sm, OSD_ORANGE,
+            txt(label, (cx_b - lw // 2, y1 - (row - 2 if comp else 20)), s.f_sm, col,
                 key=f"human_{det.track_id}")

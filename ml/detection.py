@@ -11,10 +11,14 @@ class Detection:
     x2: float
     y2: float
     confidence: float
-    source: str = "thermal"    # thermal | anomaly | radar | fused
+    source: str = "thermal"    # thermal | anomaly | rgb | radar | fused
     track_id: Optional[int] = None
     temp_celsius: float = 0.0
 
+    @property
+    def heat_only(self) -> bool:
+        """A thermal blob the camera AI has not (yet) seen as a person."""
+        return self.source == "anomaly"
     @property
     def cx(self) -> float: return (self.x1 + self.x2) / 2
     @property

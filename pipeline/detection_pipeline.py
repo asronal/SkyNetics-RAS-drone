@@ -28,6 +28,10 @@ from ml.detection import Detection
 
 logger = logging.getLogger("pipeline")
 
+# Cycle period when the thermal sensor is offline (its frames normally gate
+# each cycle; ~0.52 s per read at 4 Hz).
+_NO_THERMAL_PERIOD_S = 0.5
+
 
 @dataclass
 class FrameData:
@@ -49,7 +53,12 @@ class FrameData:
 
     @property
     def num_humans(self) -> int:
-        return len(self.tracked_humans)
+        """People the camera AI confirmed (heat-only blobs excluded)."""
+        return sum(not d.heat_only for d in self.tracked_humans)
+
+    @property
+    def num_heat(self) -> int:
+        return sum(d.heat_only for d in self.tracked_humans)
 
     @property
     def radar_confirms(self) -> bool:
@@ -109,7 +118,9 @@ class DetectionPipeline:
         self.yolo.load()
 
         if not ok_t and not self.cfg.demo_mode:
-            raise RuntimeError("MLX90640 thermal camera failed — cannot operate without it")
+            # Keep searching with the RGB camera alone: the display shows
+            # THERMAL OFFLINE, and the cycles are paced by run() instead.
+            logger.error("[PIPELINE] Thermal camera OFFLINE — continuing with RGB detection only")
 
         logger.info(
             f"[PIPELINE] Ready\n"
@@ -158,14 +169,24 @@ class DetectionPipeline:
             if pace:
                 time.sleep(max(0.0, pace - (time.perf_counter() - t)))
 
+    def _next_thermal(self) -> Optional[tuple]:
+        """(raw, visual, read_ms) from the thermal thread, or None after a
+        0.25 s wait. Without a thermal sensor: (None, None, 0.0), paced like
+        the real sensor so YOLO's duty cycle (and the display) stays the same."""
+        if self._thermal_thread is None:
+            self._stop.wait(_NO_THERMAL_PERIOD_S)
+            return None, None, 0.0
+        with self._thermal_cv:
+            if self._thermal_frame is None:
+                self._thermal_cv.wait(timeout=0.25)
+            frame, self._thermal_frame = self._thermal_frame, None
+        return frame
+
     def run(self) -> Iterator[FrameData]:
         while not self._stop.is_set():
             # 1. Wait for the next thermal frame — it's the gate for one cycle.
             # RGB/radar are only read once we know this cycle will be used.
-            with self._thermal_cv:
-                if self._thermal_frame is None:
-                    self._thermal_cv.wait(timeout=0.25)
-                frame, self._thermal_frame = self._thermal_frame, None
+            frame = self._next_thermal()
             if frame is None:
                 # Only warn if we've had no frame for 3+ seconds.
                 now = time.monotonic()
@@ -195,7 +216,10 @@ class DetectionPipeline:
 
             # 2. Anomaly detector — every frame
             t = time.perf_counter()
-            anomaly_dets, triggered = self.anomaly.detect(raw, visual)
+            if raw is None:   # thermal offline
+                anomaly_dets, triggered = [], False
+            else:
+                anomaly_dets, triggered = self.anomaly.detect(raw, visual)
             timing["anomaly_ms"] = (time.perf_counter() - t) * 1000
 
             # 3. YOLOv8 — Decoupled from thermal trigger for maximum RGB face detection
@@ -226,8 +250,9 @@ class DetectionPipeline:
             timing["tracker_ms"] = (time.perf_counter() - t) * 1000
 
             # 6. Alert FC if humans detected
-            if tracked:
-                self._alert(len(tracked), radar_data)
+            people = sum(not d.heat_only for d in tracked)
+            if people:
+                self._alert(people, radar_data)
 
             elapsed = time.perf_counter() - t0
             timing["total_ms"] = elapsed * 1000

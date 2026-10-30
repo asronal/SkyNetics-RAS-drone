@@ -16,6 +16,7 @@ Optimizations applied per requirement:
 
 import logging
 import os
+import time
 import numpy as np
 import cv2
 from pathlib import Path
@@ -269,16 +270,28 @@ class AnomalyDetector:
 # YOLOV8n ONNX DETECTOR  — runs every Nth frame
 # ═══════════════════════════════════════════════════════════════════
 
+def _input_wh(size) -> Tuple[int, int]:
+    """cfg.yolo_input_size as (width, height): an int means square,
+    a pair is (width, height) — e.g. (512, 288) for a 16:9 export."""
+    if isinstance(size, (tuple, list)):
+        return int(size[0]), int(size[1])
+    return int(size), int(size)
+
+
 class YOLODetector:
     def __init__(self, cfg):
         self.cfg         = cfg
         self._model      = None
         self._input_name = None
         self._backend    = "none"
-        self._counter    = 0
-        sz = cfg.yolo_input_size
+        self._last_run   = float("-inf")
+        self.set_input_size(*_input_wh(cfg.yolo_input_size))
+
+    def set_input_size(self, w: int, h: int):
+        """Model input width x height; load() takes it from the ONNX file."""
+        self.in_w, self.in_h = w, h
         # Pre-allocated input buffer — avoids malloc every frame
-        self._inp = np.zeros((1, 3, sz, sz), dtype=np.float32)
+        self._inp = np.zeros((1, 3, h, w), dtype=np.float32)
 
     def load(self) -> bool:
         path = Path(self.cfg.yolo_model_path)
@@ -307,9 +320,17 @@ class YOLODetector:
                     str(onnx_path), sess_options=opts,
                     providers=["CPUExecutionProvider"],
                 )
-                self._input_name = self._model.get_inputs()[0].name
+                inp = self._model.get_inputs()[0]
+                self._input_name = inp.name
+                # The export's fixed [1, 3, H, W] is the truth; the config is
+                # only a fallback (cv2 backend, dynamic-shape exports).
+                h, w = inp.shape[2:4]
+                if isinstance(h, int) and isinstance(w, int) and (w, h) != (self.in_w, self.in_h):
+                    logger.warning(f"[YOLO] model input is {w}x{h}, config yolo_input_size "
+                                   f"{self.cfg.yolo_input_size} — using the model's")
+                    self.set_input_size(w, h)
                 self._backend    = "onnx"
-                logger.info(f"[YOLO] ONNX loaded: {onnx_path} | {self.cfg.yolo_intra_threads}-thread | {self.cfg.yolo_input_size}px")
+                logger.info(f"[YOLO] ONNX loaded: {onnx_path} | {self.cfg.yolo_intra_threads}-thread | {self.in_w}x{self.in_h}")
                 return True
             except Exception as e:
                 logger.warning(f"[YOLO] ONNX failed: {e}")
@@ -338,7 +359,7 @@ class YOLODetector:
         try:
             self._model = cv2.dnn.readNetFromONNX(str(path))
             self._backend = "cv2"
-            logger.info(f"[YOLO] Successfully activated cv2.dnn backend! | {self.cfg.yolo_input_size}px")
+            logger.info(f"[YOLO] Successfully activated cv2.dnn backend! | {self.in_w}x{self.in_h}")
             return True
         except Exception as e2:
             logger.error(f"[YOLO] OpenCV DNN fallback failed: {e2}")
@@ -346,21 +367,26 @@ class YOLODetector:
             return False
 
     def should_run(self) -> bool:
-        self._counter += 1
-        return self._counter % self.cfg.yolo_every_n_frames == 0
+        # 20% slack: with ~2 cycles/s a cycle landing a few ms early would
+        # otherwise wait a whole extra cycle.
+        now = time.monotonic()
+        if now - self._last_run < self.cfg.yolo_interval_s * 0.8:
+            return False
+        self._last_run = now
+        return True
 
     def letterbox(self, visual: np.ndarray):
         """Resize / pad a BGR frame to the model input exactly as detect() does.
         Returns (RGB uint8 image, rx, ry, dw, dh) — the scale factors and
         padding map model coordinates back to the frame."""
-        sz    = self.cfg.yolo_input_size
+        W, H  = self.in_w, self.in_h
         shape = visual.shape[:2]  # H, W
 
         if getattr(self.cfg, "yolo_letterbox", True):
             # --- LETTERBOX: preserve aspect ratio, pad with grey bars ---
-            r = min(sz / shape[0], sz / shape[1])
+            r = min(H / shape[0], W / shape[1])
             new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-            dw, dh = sz - new_unpad[0], sz - new_unpad[1]
+            dw, dh = W - new_unpad[0], H - new_unpad[1]
             dw /= 2; dh /= 2
 
             if shape[::-1] != new_unpad:
@@ -373,7 +399,7 @@ class YOLODetector:
             resized = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
             rx = ry = r
         else:
-            # --- PLAIN STRETCH: resize straight to sz x sz, no padding ---
+            # --- PLAIN STRETCH: resize straight to W x H, no padding ---
             # Only correct if the model was trained/exported with the same
             # non-aspect-preserving resize. Try this if boxes are
             # consistently offset with letterbox mode — some training
@@ -382,9 +408,9 @@ class YOLODetector:
             # letterboxing, and inference must then match training exactly
             # or every box comes out shifted by roughly the letterbox
             # padding amount.
-            resized = cv2.resize(visual, (sz, sz), interpolation=cv2.INTER_LINEAR)
+            resized = cv2.resize(visual, (W, H), interpolation=cv2.INTER_LINEAR)
             dw = dh = 0.0
-            rx, ry = sz / shape[1], sz / shape[0]
+            rx, ry = W / shape[1], H / shape[0]
 
         # YOLO ONNX expects RGB colors for proper skin tracking; OpenCV gives us BGR.
         if len(resized.shape) == 3 and resized.shape[2] == 3:
@@ -392,7 +418,7 @@ class YOLODetector:
         return resized, rx, ry, dw, dh
 
     def blob(self, visual: np.ndarray) -> np.ndarray:
-        """The (1, 3, sz, sz) float32 tensor detect() feeds the ONNX model for
+        """The (1, 3, H, W) float32 tensor detect() feeds the ONNX model for
         a BGR frame — e.g. for quantization calibration (tools/quantize_yolo.py)."""
         img = self.letterbox(visual)[0]
         return np.transpose(img.astype(np.float32) / 255.0, (2, 0, 1))[None]
@@ -400,7 +426,6 @@ class YOLODetector:
     def detect(self, visual: np.ndarray, out_w: Optional[int] = None, out_h: Optional[int] = None) -> List[Detection]:
         if self._backend == "none" or visual is None:
             return []
-        sz     = self.cfg.yolo_input_size
         VH, VW = visual.shape[:2]
 
         if out_w is None: out_w = VW
@@ -416,7 +441,7 @@ class YOLODetector:
             )
             out = self._model.run(None, {self._input_name: self._inp})[0]
         else:   # "cv2"
-            blob = cv2.dnn.blobFromImage(resized, 1/255.0, (sz, sz), swapRB=False, crop=False)
+            blob = cv2.dnn.blobFromImage(resized, 1/255.0, (self.in_w, self.in_h), swapRB=False, crop=False)
             self._model.setInput(blob)
             out = self._model.forward()
 
@@ -541,6 +566,7 @@ class _Track:
         self.last_conf = det.confidence
         self.last_src  = det.source
         self.last_temp = det.temp_celsius
+        self.camera_seen = not det.heat_only   # YOLO matched it at least once
 
         # Smoothed display box — EMA of raw detection positions
         self._smooth   = np.array(
@@ -582,6 +608,7 @@ class _Track:
         self.hits+=1; self.streak+=1; self.missed=0
         self.last_conf=det.confidence; self.last_src=det.source
         self.last_temp=det.temp_celsius
+        self.camera_seen |= not det.heat_only
 
     def predicted_box(self) -> np.ndarray:
         cx,cy = self.x[0,0],self.x[1,0]
@@ -647,10 +674,11 @@ class HumanTracker:
         # Unmatched dets — try re-entry before creating new track
         for di in range(len(dets)):
             if di in matched_dets: continue
-            old_id = self._try_reentry(dets[di])
+            old = self._try_reentry(dets[di])
             t = _Track(dets[di])
-            if old_id is not None:
-                t.id = old_id   # reclaim old ID — no extra count
+            if old is not None:
+                t.id = old["id"]   # reclaim old ID — no extra count
+                t.camera_seen |= old["cam"]
             self._tracks.append(t)
 
         # Prune — move dead tracks to graveyard
@@ -661,7 +689,8 @@ class HumanTracker:
         for t in dead:
             if t.hits >= self.cfg.tracker_min_hits:
                 self._graveyard.append(
-                    {"id": t.id, "box": t.display_box().copy(), "ttl": self._grace}
+                    {"id": t.id, "box": t.display_box().copy(), "ttl": self._grace,
+                     "cam": t.camera_seen}
                 )
 
         # Tick graveyard
@@ -680,7 +709,8 @@ class HumanTracker:
             )
             if not confirmed: continue
 
-            if t.id not in self._seen_ids:
+            # Heat-only tracks are shown (as HEAT) but not counted as people
+            if t.camera_seen and t.id not in self._seen_ids:
                 self._seen_ids.add(t.id)
                 self._total_unique += 1
                 logger.info(
@@ -692,23 +722,25 @@ class HumanTracker:
             out.append(Detection(
                 x1=float(b[0]), y1=float(b[1]),
                 x2=float(b[2]), y2=float(b[3]),
-                confidence=t.last_conf, source=t.last_src,
+                confidence=t.last_conf,
+                # YOLO runs every other cycle: keep a person a person in between
+                source="rgb" if t.camera_seen and t.last_src == "anomaly" else t.last_src,
                 track_id=t.id, temp_celsius=t.last_temp,
             ))
         return out
 
-    def _try_reentry(self, det: Detection) -> Optional[int]:
+    def _try_reentry(self, det: Detection) -> Optional[dict]:
         if not self._graveyard: return None
         db = np.array([[det.x1,det.y1,det.x2,det.y2]], np.float32)
-        best_iou, best_id = 0., None
+        best_iou, best = 0., None
         for e in self._graveyard:
             iou = float(_iou_matrix(db, e["box"].reshape(1,4))[0,0])
-            if iou > best_iou: best_iou, best_id = iou, e["id"]
+            if iou > best_iou: best_iou, best = iou, e
         if best_iou >= self.cfg.tracker_iou_thresh * 0.7:
             self._graveyard = deque(
-                [e for e in self._graveyard if e["id"] != best_id], maxlen=20
+                [e for e in self._graveyard if e["id"] != best["id"]], maxlen=20
             )
-            return best_id
+            return best
         return None
 
 

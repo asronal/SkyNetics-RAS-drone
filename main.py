@@ -106,7 +106,19 @@
   Each image is the full 1280x720 OSD frame with bounding box visible.
 """
 
+import os
 import sys
+
+# The sensor drivers (MLX90640/Blinka) and onnxruntime live only in ~/venv. Started
+# with plain `python` (system Python) the thermal camera showed OFFLINE and YOLO fell
+# back to slow cv2.dnn — so re-launch under the venv when it exists.
+_VENV = os.path.expanduser("~/venv")
+if os.path.exists(os.path.join(_VENV, "bin", "python")) and \
+        os.path.realpath(sys.prefix) != os.path.realpath(_VENV):
+    _py = os.path.join(_VENV, "bin", "python")
+    print(f"[MAIN] Re-launching with {_py} (sensor drivers + onnxruntime live there)", flush=True)
+    os.execv(_py, [_py] + sys.argv)
+
 import argparse
 import dataclasses
 import logging
@@ -153,6 +165,9 @@ def parse_args():
     p.add_argument("--profile",     choices=["auto", "hdmi", "composite"], default=None,
                    help="Output profile (default: config.py display_profile — "
                         "composite when the composite output is active)")
+    p.add_argument("--fps",         type=float, default=None,
+                   help="Camera/video frame rate (e.g. 15 to halve the CPU load of the "
+                        "video and of a remote-desktop viewer like AnyDesk)")
     return p.parse_args()
 
 
@@ -252,6 +267,8 @@ def main():
         cfg.fullscreen = False
     if not cfg.headless:
         profile = apply_display_profile(cfg, args.profile)
+        if args.fps:
+            cfg.rgb_fps = args.fps
         logger.info(f"[MAIN] Output profile: {profile} ({cfg.display_width}x{cfg.display_height} "
                     f"@ {cfg.rgb_fps}fps, OSD style {cfg.osd_style})")
 

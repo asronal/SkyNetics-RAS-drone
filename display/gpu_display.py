@@ -293,6 +293,7 @@ def _worker_main(cfg, link_args):
             link.want_main.value = 1
             if not link.main_ready.wait(0.25):
                 link.want_main.value = 0
+                logger.warning("[GPU] No camera frame for snapshot/recording within 0.25 s — skipped")
                 return None
             return link.main.copy()
 
@@ -449,7 +450,7 @@ class GpuDisplay:
         from PyQt5.QtCore import Qt, QTimer
         from PyQt5.QtWidgets import QApplication
         from picamera2 import Picamera2, MappedArray
-        from sensors.rgb_camera import _write_pdaf_disabled_tuning
+        from sensors.rgb_camera import _camera_tuning
 
         self.cfg, self.link = cfg, link
         self.W, self.H = cfg.display_width, cfg.display_height
@@ -461,7 +462,7 @@ class GpuDisplay:
         refresh = self._app.primaryScreen().refreshRate()
         self.fps = _paced_fps(float(cfg.rgb_fps), refresh)
 
-        tuning = _write_pdaf_disabled_tuning()
+        tuning = _camera_tuning(cfg)
         self.picam2 = Picamera2(tuning=Picamera2.load_tuning_file(tuning)) if tuning else Picamera2()
         try:
             self._setup(cfg, link)
@@ -473,7 +474,7 @@ class GpuDisplay:
                     f"(paced to the {refresh:.2f}Hz display) | ML frames {cfg.rgb_width}x{cfg.rgb_height}")
 
     def _setup(self, cfg, link: _Link):
-        from sensors.rgb_camera import _SENSOR_W, _SENSOR_H, _LENS_POSITION
+        from sensors.rgb_camera import _SENSOR_W, _SENSOR_H, _focus_controls
         self.picam2.configure(self.picam2.create_video_configuration(
             # Display stream: drawn by the GPU straight from the camera's buffers.
             main={"size": (self.W, self.H), "format": "XBGR8888"},
@@ -481,8 +482,7 @@ class GpuDisplay:
             lores={"size": (cfg.rgb_width, cfg.rgb_height), "format": "YUV420"},
             # Full-frame sensor readout keeps the IMX708's PDAF data valid — see sensors/rgb_camera.py.
             raw={"size": (_SENSOR_W, _SENSOR_H)},
-            controls={"FrameRate": self.fps, "AfMode": 0,
-                      "LensPosition": _LENS_POSITION, "NoiseReductionMode": 1},
+            controls={"FrameRate": self.fps, **_focus_controls(cfg), "NoiseReductionMode": 1},
             buffer_count=_BUFFER_COUNT, display="main",
         ))
         self.picam2.post_callback = self._on_frame

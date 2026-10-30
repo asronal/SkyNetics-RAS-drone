@@ -38,10 +38,86 @@ logger = logging.getLogger("thermal")
 W, H = 32, 24
 NPIX = W * H
 
-# Minimum seconds between the starts of getFrame() calls, and the back-off
-# after a failed read. A frame takes ~520ms at 4Hz, so back-to-back reads
-# are never held up by this.
-_MIN_FRAME_INTERVAL_S: float = 0.23
+# Minimum time between the starts of getFrame() calls, and the back-off after
+# a failed read, as a fraction of one full frame (2 subpages = 2/refresh s,
+# ~520ms at 4Hz), so back-to-back reads are never held up by this.
+_MIN_FRAME_INTERVAL_FR: float = 0.45
+
+# Pause between data-ready polls. The driver spins on the status register
+# (277 I2C polls per frame at 100 kHz, ~4x more at 400 kHz); 5 ms adds at most
+# 5 ms of delay and frees the CPU (and the GIL) for the other threads.
+_POLL_SLEEP_S = 0.005
+_READY_TIMEOUT_S = 2.0   # longer than a subpage at the slowest rate we use
+
+# Calibration (EEPROM) read attempts at start-up.
+_EEPROM_TRIES = 5
+
+
+_CHESS = (np.indices((H, W)).sum(0) % 2).astype(bool)   # one MLX90640 subpage (chess mode)
+_CHECKER_KILL = np.array([[0, 1, 0], [1, 4, 1], [0, 1, 0]], np.float32) / 8
+_LEVEL_ALPHA = 0.35    # frame-level smoothing per frame (settles in ~4 frames: ~1 s at 8 Hz)
+
+
+def _install_polite_wait(sensor):
+    """Replace the driver's _GetFrameData with the same logic, but sleeping
+    between status polls and giving up after _READY_TIMEOUT_S (the driver's
+    loop spins forever on a dead sensor, so the thread can't be stopped)."""
+    def get_frame_data(frame_data):
+        status, control = [0], [0]
+        deadline = time.monotonic() + _READY_TIMEOUT_S
+        sensor._I2CReadWords(0x8000, status)
+        while not status[0] & 0x0008:
+            if time.monotonic() > deadline:
+                raise RuntimeError("No new frame data")
+            time.sleep(_POLL_SLEEP_S)
+            sensor._I2CReadWords(0x8000, status)
+        cnt = 0
+        while status[0] & 0x0008 and cnt < 5:   # re-read if a new subpage arrived meanwhile
+            sensor._I2CWriteWord(0x8000, 0x0030)
+            sensor._I2CReadWords(0x0400, frame_data, end=832)
+            sensor._I2CReadWords(0x8000, status)
+            cnt += 1
+        if cnt > 4:
+            raise RuntimeError("Too many retries")
+        sensor._I2CReadWords(0x800D, control)
+        frame_data[832] = control[0]
+        frame_data[833] = status[0] & 0x0001
+        return frame_data[833]
+    sensor._GetFrameData = get_frame_data
+
+
+def _open_mlx90640(mlx, i2c):
+    """adafruit_mlx90640.MLX90640(i2c), but only from a verified EEPROM read.
+
+    The driver reads the 832-word calibration EEPROM once and trusts it. On a
+    flaky bus (loose wire, weak pull-ups) the read fails or turns into 0xFFFF
+    part-way, and 0xFFFF calibration sends _ExtractAlphaParameters into an
+    endless loop — start-up hangs forever. Two reads must match and must not
+    be mostly 0xFFFF before the parameters are extracted."""
+    sensor = mlx.MLX90640.__new__(mlx.MLX90640)
+    sensor.i2c_device = mlx.I2CDevice(i2c, 0x33)
+    last = None
+    problem = "no read"
+    for _ in range(_EEPROM_TRIES):
+        try:
+            sensor._I2CReadWords(0x2400, mlx.eeData)
+        except OSError as e:
+            problem = f"I2C error ({e})"
+            last = None
+            time.sleep(0.05)
+            continue
+        ee = list(mlx.eeData)
+        if ee.count(0xFFFF) > 64:
+            problem = f"{ee.count(0xFFFF)}/832 calibration words read as 0xFFFF"
+            last = None
+        elif ee == last:
+            sensor._ExtractParameters()
+            return sensor
+        else:
+            problem = "calibration reads don't match"
+            last = ee
+    raise RuntimeError(f"MLX90640 calibration unreadable after {_EEPROM_TRIES} tries: {problem} "
+                       f"— check the sensor's SDA/SCL/3.3V/GND wiring")
 
 
 def build_rescue_colormap() -> np.ndarray:
@@ -105,7 +181,7 @@ class ThermalCamera:
     IMPORTANT: getFrame() is called synchronously in the main pipeline loop.
     adafruit-blinka's I2C is NOT thread-safe on Linux — background-thread
     ownership causes bus hangs. The rate limiter (_last_read_time) ensures
-    we never call getFrame() faster than REFRESH_4_HZ (250ms intervals).
+    we never call getFrame() faster than the sensor refresh (cfg.thermal_fps).
     Returns quickly (cached None/None) if called before the sensor is ready.
     """
 
@@ -115,8 +191,10 @@ class ThermalCamera:
         self._online = False
         self._buf = [0.0] * NPIX          # reused buffer — avoids GC pressure
         self._last_read_time: float = 0.0  # rate-limit guard
+        self._min_interval = _MIN_FRAME_INTERVAL_FR * 2.0 / max(1, cfg.thermal_fps)
         self._t_min_ema: Optional[float] = None
         self._t_max_ema: Optional[float] = None
+        self._level: Optional[float] = None   # smoothed frame median (_denoise)
 
     def initialize(self) -> bool:
         if self.cfg.demo_mode:
@@ -127,10 +205,13 @@ class ThermalCamera:
             import board, busio
             import adafruit_mlx90640
             i2c = busio.I2C(board.SCL, board.SDA, frequency=400_000)
-            self._sensor = adafruit_mlx90640.MLX90640(i2c)
-            self._sensor.refresh_rate = adafruit_mlx90640.RefreshRate.REFRESH_4_HZ
+            self._sensor = _open_mlx90640(adafruit_mlx90640, i2c)
+            _install_polite_wait(self._sensor)
+            hz = self.cfg.thermal_fps
+            self._sensor.refresh_rate = getattr(adafruit_mlx90640.RefreshRate, f"REFRESH_{hz}_HZ")
+            self._min_interval = _MIN_FRAME_INTERVAL_FR * 2.0 / hz
             self._online = True
-            logger.info("[THERMAL] MLX90640 online @ 4Hz | blue-cold/orange-hot palette")
+            logger.info(f"[THERMAL] MLX90640 online @ {hz}Hz | blue-cold/orange-hot palette")
             return True
         except ImportError:
             logger.error("[THERMAL] pip install adafruit-circuitpython-mlx90640 adafruit-blinka")
@@ -148,7 +229,7 @@ class ThermalCamera:
         # Rate-limit: mainly a back-off after an I2C error, so a failing
         # sensor isn't hammered (getFrame() waits for new data by itself).
         now = time.monotonic()
-        if now - self._last_read_time < _MIN_FRAME_INTERVAL_S:
+        if now - self._last_read_time < self._min_interval:
             return None, None   # pipeline will use last fused result — not an error
 
         try:
@@ -159,7 +240,9 @@ class ThermalCamera:
             self._last_read_time = now
             self._sensor.getFrame(self._buf)
             raw = np.array(self._buf, dtype=np.float32).reshape(H, W)
-            raw = np.fliplr(raw)
+            raw = np.ascontiguousarray(np.fliplr(raw))
+            if self.cfg.thermal_denoise:
+                self._denoise(raw)
             return raw, self._to_visual(raw)
         except Exception as e:
             # We log exactly what failed on debug to trace I2C issues,
@@ -167,6 +250,24 @@ class ThermalCamera:
             logger.debug(f"[THERMAL] Sensor read failed: {type(e).__name__}: {e}")
             self._last_read_time = time.monotonic()
             return None, None
+
+    def _denoise(self, raw: np.ndarray):
+        """In place. This sensor's two chess-pattern subpages come out at different
+        levels (2-8 C apart, flipping from frame to frame — measured 2026-10-29, the
+        raw pixels themselves jump, not the maths), which shows as a checkerboard,
+        and the whole frame's level jumps 2-4 C per frame. Shift both subpages to a
+        common median, then smooth the frame level over time. Spatial detail (a
+        person is split evenly across both subpages) is untouched."""
+        d = 0.5 * (np.median(raw[_CHESS]) - np.median(raw[~_CHESS]))
+        raw[_CHESS] -= d
+        raw[~_CHESS] += d
+        m = float(np.median(raw))
+        self._level = m if self._level is None else self._level + _LEVEL_ALPHA * (m - self._level)
+        raw += self._level - m
+        # What's left of the checkerboard grows with the signal (a hot face still
+        # shows dots). Centre 1/2 + 4 neighbours 1/8 cancels a pure checkerboard
+        # exactly while keeping blob shapes: 0.5 - 4 * 0.125 = 0.
+        raw[:] = cv2.filter2D(raw, -1, _CHECKER_KILL, borderType=cv2.BORDER_REPLICATE)
 
     def release(self):
         self._sensor = None

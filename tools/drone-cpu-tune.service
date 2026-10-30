@@ -1,0 +1,11 @@
+[Unit]
+Description=Rescue drone CPU tuning (performance governor, stop unused 1-Wire search)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$c"; done; for i in $(seq 30); do f=/sys/bus/w1/devices/w1_bus_master1/w1_master_search; [ -e "$f" ] && { echo 0 > "$f"; break; }; sleep 1; done; true'
+
+[Install]
+WantedBy=multi-user.target

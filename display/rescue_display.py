@@ -196,6 +196,8 @@ class RescueDisplay:
         if self.cfg.snapshot_enabled and getattr(fd, "tracked_humans", None):
             now = time.time()
             for t in fd.tracked_humans:
+                if t.heat_only:
+                    continue
                 last = self._last_snapshot_time.get(t.track_id, 0)
                 if now - last >= self.cfg.snapshot_cooldown:
                     paths.append(f"{self.cfg.snapshot_dir}/auto_snap_TRK{t.track_id}_{fd.frame_id:05d}.jpg")
@@ -270,6 +272,7 @@ class RescueDisplay:
         rd = fd.radar
         return dict(
             num_humans     = fd.num_humans,
+            num_heat       = fd.num_heat,
             total_unique   = getattr(fd, "total_unique_humans", 0),
             radar_present  = rd is not None and rd.human_present,
             radar_state    = rd.target_state    if rd else 0,

@@ -34,7 +34,7 @@ from onnxruntime.quantization.shape_inference import quant_pre_process
 from config import Config
 from ml.models import YOLODetector
 
-# YOLOv8 head: the DFL box decoding after the last convolutions. It turns
+# YOLOv8/YOLO11 head: the DFL box decoding after the last convolutions. It turns
 # distributions into pixel coordinates, so int8 rounding there moves boxes.
 _POST = ("/dfl/", "/Slice", "/Sub", "/Add_1", "/Add_2", "/Div_1", "/Concat_2", "/Mul_2", "/Concat_3")
 
@@ -66,6 +66,11 @@ def main():
     src = a.model or cfg.yolo_model_path
     out = a.out or os.path.splitext(src)[0] + "_int8.onnx"
     det = YOLODetector(cfg)
+    model = onnx.load(src)
+    input_name = model.graph.input[0].name
+    h, w = (d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim[2:4])
+    if h and w:
+        det.set_input_size(w, h)  # calibrate at the model's own input shape
 
     paths = sorted(p for p in glob.glob(os.path.join(a.images, "*")) if p.lower().endswith((".jpg", ".jpeg", ".png")))
     paths = paths[a.offset::a.every][:a.n]
@@ -73,9 +78,9 @@ def main():
     if not blobs:
         sys.exit("no calibration images found")
 
-    model = onnx.load(src)
-    input_name = model.graph.input[0].name
-    head = [n.name for n in model.graph.node if "/model.22/" in n.name]
+    # Detect head = the last /model.N/ block (22 in YOLOv8, 23 in YOLO11).
+    idx = max(int(n.name.split("/model.")[1].split("/")[0]) for n in model.graph.node if "/model." in n.name)
+    head = [n.name for n in model.graph.node if f"/model.{idx}/" in n.name]
     exclude = {"none": [], "head": head,
                "post": [n for n in head if any(k in n for k in _POST)]}[a.keep_float]
 

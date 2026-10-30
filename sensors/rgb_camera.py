@@ -81,6 +81,20 @@ _LENS_POSITION: float = 0.5
 _TUNING_PATH: str = "/tmp/imx708_no_pdaf.json"
 
 
+def _focus_controls(cfg) -> dict:
+    """Continuous autofocus (PDAF + contrast) when cfg.camera_autofocus, else the
+    fixed manual focus at _LENS_POSITION."""
+    if cfg.camera_autofocus:
+        return {"AfMode": 2}                  # libcamera AfModeContinuous
+    return {"AfMode": 0, "LensPosition": _LENS_POSITION}
+
+
+def _camera_tuning(cfg) -> Optional[str]:
+    """Tuning file for Picamera2: the stock one (None) with autofocus, else the
+    copy with the AF algorithm disabled."""
+    return None if cfg.camera_autofocus else _write_pdaf_disabled_tuning()
+
+
 def _write_pdaf_disabled_tuning() -> Optional[str]:
     """
     Write a minimal Picamera2 tuning override that disables the PDAF
@@ -215,7 +229,7 @@ class RGBCamera:
             from picamera2 import Picamera2
 
             # ── PDAF FIX — write tuning override ──────────────────
-            tuning_path = _write_pdaf_disabled_tuning()
+            tuning_path = _camera_tuning(self.cfg)
             if tuning_path:
                 # Load the patched tuning file so the IPA does not run PDAF
                 tuning = Picamera2.load_tuning_file(tuning_path)
@@ -249,8 +263,7 @@ class RGBCamera:
                 },
                 controls={
                     "FrameRate":    float(self.cfg.rgb_fps),
-                    "AfMode":       0,              # Manual AF — no lens hunting
-                    "LensPosition": _LENS_POSITION, # ~2m focus for aerial use
+                    **_focus_controls(self.cfg),    # continuous AF or fixed ~2 m focus
                     "NoiseReductionMode": 1,        # Fast noise reduction — saves CPU
                 },
                 buffer_count=4,
@@ -272,7 +285,7 @@ class RGBCamera:
                 f"[RGB] Pi Camera Module 3 online | "
                 f"sensor={_SENSOR_W}x{_SENSOR_H} (full-frame, PDAF valid) | "
                 f"output={self.cfg.rgb_width}x{self.cfg.rgb_height} @ {self.cfg.rgb_fps}fps | "
-                f"AF=Manual LensPos={_LENS_POSITION} | format=BGR888"
+                f"AF={'Continuous' if self.cfg.camera_autofocus else f'Manual LensPos={_LENS_POSITION}'} | format=BGR888"
             )
             return True
 
